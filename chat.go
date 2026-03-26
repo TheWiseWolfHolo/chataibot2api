@@ -51,11 +51,19 @@ func (a *App) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	model := strings.TrimSpace(req.Model)
-	if !isSupportedImageModel(model) {
-		writeOpenAIError(w, http.StatusBadRequest, "text chat is not supported by this service", "unsupported_text_chat")
-		return
-	}
+	req.Model = model
 
+	switch {
+	case isSupportedImageModel(model):
+		a.handleImageChatCompletions(w, req)
+	case isSupportedTextModel(model):
+		a.handleTextChatCompletions(w, req)
+	default:
+		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("Unsupported model: %s", model), "invalid_request_error")
+	}
+}
+
+func (a *App) handleImageChatCompletions(w http.ResponseWriter, req chatCompletionRequest) {
 	prompt, sources, err := extractPromptAndImageSources(req)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
@@ -74,7 +82,7 @@ func (a *App) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	imageReq := OpenAIImageReq{
 		Prompt: prompt,
-		Model:  model,
+		Model:  req.Model,
 		Size:   req.Size,
 	}
 	if len(normalizedSources) == 1 {

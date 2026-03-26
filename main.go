@@ -16,6 +16,9 @@ type APIClient interface {
 	GenerateImage(prompt, provider, version, jwtToken string) (string, error)
 	EditImage(prompt, base64Data, model, jwtToken string) (string, error)
 	MergeImage(prompt string, base64Images []string, mergeType, jwtToken string) (string, error)
+	CreateChatContext(model, title, jwtToken string) (int, error)
+	SendTextMessage(req UpstreamTextMessageRequest, jwtToken string) (TextCompletionResult, error)
+	StreamTextMessage(req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error)
 	GetCount(jwtToken string) int
 	SendRegisterRequest(email string) bool
 	VerifyAccount(email, code string) string

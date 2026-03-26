@@ -14,6 +14,9 @@ type ImageBackend interface {
 	GenerateImage(prompt, provider, version, jwtToken string) (string, error)
 	EditImage(prompt, base64Data, model, jwtToken string) (string, error)
 	MergeImage(prompt string, base64Images []string, mergeType, jwtToken string) (string, error)
+	CreateChatContext(model, title, jwtToken string) (int, error)
+	SendTextMessage(req UpstreamTextMessageRequest, jwtToken string) (TextCompletionResult, error)
+	StreamTextMessage(req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error)
 }
 
 type PoolManager interface {
@@ -43,8 +46,11 @@ func NewApp(pool PoolManager, backend ImageBackend, now func() time.Time) *App {
 }
 
 func (a *App) Models() []string {
-	models := make([]string, 0, len(modelRouter))
+	models := make([]string, 0, len(modelRouter)+len(textModelRouter))
 	for modelID := range modelRouter {
+		models = append(models, modelID)
+	}
+	for modelID := range textModelRouter {
 		models = append(models, modelID)
 	}
 	sort.Strings(models)
@@ -114,6 +120,106 @@ func (a *App) Generate(req OpenAIImageReq) (OpenAIImageResp, error) {
 		Created: a.now().Unix(),
 		Data:    []ImageData{{URL: imgURL}},
 	}, nil
+}
+
+func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult, error) {
+	if a.pool == nil || a.backend == nil {
+		return TextCompletionResult{}, fmt.Errorf("app dependencies are not configured")
+	}
+
+	messageReq, title, requiredCost, err := buildTextUpstreamRequest(req)
+	if err != nil {
+		return TextCompletionResult{}, newStatusError(http.StatusBadRequest, err.Error())
+	}
+
+	acc := a.pool.Acquire(requiredCost)
+	defer a.pool.Release(acc)
+
+	chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
+	if err != nil {
+		return TextCompletionResult{}, wrapTextBackendError("failed to create chat context", err)
+	}
+
+	messageReq.ChatID = chatID
+	resp, err := a.backend.SendTextMessage(messageReq, acc.JWT)
+	if err != nil {
+		return TextCompletionResult{}, wrapTextBackendError("text generation failed", err)
+	}
+
+	return validateTextCompletionResult(req.Model, resp)
+}
+
+func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEvent) error) (TextCompletionResult, error) {
+	if a.pool == nil || a.backend == nil {
+		return TextCompletionResult{}, fmt.Errorf("app dependencies are not configured")
+	}
+
+	messageReq, title, requiredCost, err := buildTextUpstreamRequest(req)
+	if err != nil {
+		return TextCompletionResult{}, newStatusError(http.StatusBadRequest, err.Error())
+	}
+
+	acc := a.pool.Acquire(requiredCost)
+	defer a.pool.Release(acc)
+
+	chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
+	if err != nil {
+		return TextCompletionResult{}, wrapTextBackendError("failed to create chat context", err)
+	}
+
+	messageReq.ChatID = chatID
+	resp, err := a.backend.StreamTextMessage(messageReq, acc.JWT, func(event TextStreamEvent) error {
+		if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
+			if mismatchErr := ensureModelMatch(req.Model, event.ChatModel); mismatchErr != nil {
+				return mismatchErr
+			}
+		}
+		if emit == nil {
+			return nil
+		}
+		return emit(event)
+	})
+	if err != nil {
+		return TextCompletionResult{}, wrapTextBackendError("text streaming failed", err)
+	}
+
+	return validateTextCompletionResult(req.Model, resp)
+}
+
+func validateTextCompletionResult(requestedModel string, resp TextCompletionResult) (TextCompletionResult, error) {
+	if err := ensureModelMatch(requestedModel, resp.ChatModel); err != nil {
+		return TextCompletionResult{}, err
+	}
+
+	if strings.TrimSpace(resp.ChatModel) == "" {
+		resp.ChatModel = requestedModel
+	}
+	if strings.TrimSpace(resp.Content) == "" {
+		return TextCompletionResult{}, newStatusError(http.StatusBadGateway, "upstream returned empty text completion")
+	}
+	return resp, nil
+}
+
+func ensureModelMatch(requestedModel string, actualModel string) error {
+	requested := strings.TrimSpace(requestedModel)
+	actual := strings.TrimSpace(actualModel)
+	if actual == "" || requested == "" {
+		return nil
+	}
+	if requested != actual {
+		return newStatusError(http.StatusBadGateway, fmt.Sprintf("upstream model mismatch: requested %s, got %s", requested, actual))
+	}
+	return nil
+}
+
+func wrapTextBackendError(prefix string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if statusCodeForError(err) != http.StatusInternalServerError {
+		return err
+	}
+	return newStatusError(http.StatusInternalServerError, fmt.Sprintf("%s: %v", prefix, err))
 }
 
 type statusError struct {

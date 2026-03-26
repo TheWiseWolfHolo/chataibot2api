@@ -52,7 +52,7 @@ func (f *fakePool) Prune() PruneSummary {
 	return f.pruneResult
 }
 
-type fakeImageBackend struct {
+type fakeBackend struct {
 	updateCalled bool
 	lastRatio    string
 	lastPrompt   string
@@ -65,15 +65,32 @@ type fakeImageBackend struct {
 	generateURL  string
 	editURL      string
 	mergeURL     string
+
+	textContextModel string
+	textContextTitle string
+	textContextJWT   string
+	textContextID    int
+	textContextErr   error
+
+	textRequest    UpstreamTextMessageRequest
+	textRequestJWT string
+	textResponse   TextCompletionResult
+	textErr        error
+
+	textStreamRequest    UpstreamTextMessageRequest
+	textStreamRequestJWT string
+	textStreamEvents     []TextStreamEvent
+	textStreamResponse   TextCompletionResult
+	textStreamErr        error
 }
 
-func (f *fakeImageBackend) UpdateUserSettings(_ string, aspectRatio string) bool {
+func (f *fakeBackend) UpdateUserSettings(_ string, aspectRatio string) bool {
 	f.updateCalled = true
 	f.lastRatio = aspectRatio
 	return true
 }
 
-func (f *fakeImageBackend) GenerateImage(prompt, provider, version, _ string) (string, error) {
+func (f *fakeBackend) GenerateImage(prompt, provider, version, _ string) (string, error) {
 	f.lastPrompt = prompt
 	f.lastModel = provider
 	f.lastVersion = version
@@ -83,7 +100,7 @@ func (f *fakeImageBackend) GenerateImage(prompt, provider, version, _ string) (s
 	return f.generateURL, nil
 }
 
-func (f *fakeImageBackend) EditImage(prompt, imageData, mode, _ string) (string, error) {
+func (f *fakeBackend) EditImage(prompt, imageData, mode, _ string) (string, error) {
 	f.lastPrompt = prompt
 	f.lastImage = imageData
 	f.lastEditMode = mode
@@ -93,7 +110,7 @@ func (f *fakeImageBackend) EditImage(prompt, imageData, mode, _ string) (string,
 	return f.editURL, nil
 }
 
-func (f *fakeImageBackend) MergeImage(prompt string, images []string, mode, _ string) (string, error) {
+func (f *fakeBackend) MergeImage(prompt string, images []string, mode, _ string) (string, error) {
 	f.lastPrompt = prompt
 	f.lastImages = append([]string(nil), images...)
 	f.lastMerge = mode
@@ -103,13 +120,72 @@ func (f *fakeImageBackend) MergeImage(prompt string, images []string, mode, _ st
 	return f.mergeURL, nil
 }
 
-func (f *fakeImageBackend) GetCount(_ string) int {
+func (f *fakeBackend) CreateChatContext(model, title, jwtToken string) (int, error) {
+	f.textContextModel = model
+	f.textContextTitle = title
+	f.textContextJWT = jwtToken
+	if f.textContextErr != nil {
+		return 0, f.textContextErr
+	}
+	if f.textContextID == 0 {
+		f.textContextID = 42
+	}
+	return f.textContextID, nil
+}
+
+func (f *fakeBackend) SendTextMessage(req UpstreamTextMessageRequest, jwtToken string) (TextCompletionResult, error) {
+	f.textRequest = req
+	f.textRequestJWT = jwtToken
+	if f.textErr != nil {
+		return TextCompletionResult{}, f.textErr
+	}
+	if f.textResponse.ChatModel == "" {
+		f.textResponse.ChatModel = req.Model
+	}
+	if f.textResponse.Content == "" {
+		f.textResponse.Content = "hello from text backend"
+	}
+	return f.textResponse, nil
+}
+
+func (f *fakeBackend) StreamTextMessage(req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error) {
+	f.textStreamRequest = req
+	f.textStreamRequestJWT = jwtToken
+	if f.textStreamErr != nil {
+		return TextCompletionResult{}, f.textStreamErr
+	}
+
+	events := append([]TextStreamEvent(nil), f.textStreamEvents...)
+	if len(events) == 0 {
+		events = []TextStreamEvent{
+			{Type: "botType", ChatModel: req.Model},
+			{Type: "chunk", Delta: "stream"},
+			{Type: "chunk", Delta: "_ok"},
+		}
+	}
+	for _, event := range events {
+		if err := emit(event); err != nil {
+			return TextCompletionResult{}, err
+		}
+	}
+
+	resp := f.textStreamResponse
+	if resp.ChatModel == "" {
+		resp.ChatModel = req.Model
+	}
+	if resp.Content == "" {
+		resp.Content = "stream_ok"
+	}
+	return resp, nil
+}
+
+func (f *fakeBackend) GetCount(_ string) int {
 	return 65
 }
 
-func newTestHandler() (*fakePool, *fakeImageBackend, http.Handler) {
+func newTestHandler() (*fakePool, *fakeBackend, http.Handler) {
 	pool := &fakePool{}
-	backend := &fakeImageBackend{}
+	backend := &fakeBackend{}
 	app := NewApp(pool, backend, func() time.Time {
 		return time.Unix(1_700_000_000, 0)
 	})
@@ -185,14 +261,27 @@ func TestModelsEndpointListsSupportedModels(t *testing.T) {
 		t.Fatalf("expected object=list, got %q", resp.Object)
 	}
 	found := false
+	foundText := false
+	foundInternet := false
 	for _, item := range resp.Data {
 		if item.ID == "gpt-image-1.5-high" {
 			found = true
-			break
+		}
+		if item.ID == "gpt-4.1" {
+			foundText = true
+		}
+		if item.ID == "gpt-4o-search-preview" {
+			foundInternet = true
 		}
 	}
 	if !found {
 		t.Fatalf("expected gpt-image-1.5-high in model list, got %+v", resp.Data)
+	}
+	if !foundText {
+		t.Fatalf("expected gpt-4.1 in model list, got %+v", resp.Data)
+	}
+	if !foundInternet {
+		t.Fatalf("expected gpt-4o-search-preview in model list, got %+v", resp.Data)
 	}
 }
 
@@ -287,13 +376,16 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsRejectsUnsupportedTextChat(t *testing.T) {
+func TestChatCompletionsSupportsTextChat(t *testing.T) {
 	t.Helper()
 
-	_, _, handler := newTestHandler()
+	pool, backend, handler := newTestHandler()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"gpt-4o-mini",
-		"messages":[{"role":"user","content":"hello"}]
+		"model":"gpt-4.1",
+		"messages":[
+			{"role":"system","content":"You are concise."},
+			{"role":"user","content":"Say hello in one word."}
+		]
 	}`))
 	req.Header.Set("Authorization", "Bearer api-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -301,11 +393,38 @@ func TestChatCompletionsRejectsUnsupportedTextChat(t *testing.T) {
 
 	handler.ServeHTTP(recorder, req)
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "text chat") {
-		t.Fatalf("expected unsupported text chat error, got %s", recorder.Body.String())
+	if pool.acquiredCost != 3 {
+		t.Fatalf("expected cost 3 for gpt-4.1, got %d", pool.acquiredCost)
+	}
+	if backend.textContextModel != "gpt-4.1" {
+		t.Fatalf("expected text context model gpt-4.1, got %q", backend.textContextModel)
+	}
+	if !strings.Contains(backend.textRequest.Text, "You are concise.") || !strings.Contains(backend.textRequest.Text, "Say hello in one word.") {
+		t.Fatalf("expected flattened prompt to include system and user content, got %q", backend.textRequest.Text)
+	}
+	if backend.textRequest.Model != "gpt-4.1" {
+		t.Fatalf("expected text request model gpt-4.1, got %q", backend.textRequest.Model)
+	}
+
+	var resp struct {
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected JSON response, got error %v with body %s", err, recorder.Body.String())
+	}
+	if resp.Model != "gpt-4.1" {
+		t.Fatalf("expected response model gpt-4.1, got %q", resp.Model)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hello from text backend" {
+		t.Fatalf("unexpected text chat content: %s", recorder.Body.String())
 	}
 }
 
@@ -335,6 +454,119 @@ func TestChatCompletionsStreamsMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "[DONE]") {
 		t.Fatalf("expected [DONE] in stream body, got %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsStreamsTextChat(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	backend.textStreamEvents = []TextStreamEvent{
+		{Type: "botType", ChatModel: "gpt-4.1"},
+		{Type: "chunk", Delta: "hello"},
+		{Type: "chunk", Delta: " world"},
+	}
+	backend.textStreamResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1",
+		Content:   "hello world",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1",
+		"stream":true,
+		"messages":[{"role":"user","content":"Say hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("expected SSE content type, got headers=%v body=%s", recorder.Header(), recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"model":"gpt-4.1"`) {
+		t.Fatalf("expected stream model gpt-4.1, got %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"content":"hello"`) || !strings.Contains(recorder.Body.String(), `"content":" world"`) {
+		t.Fatalf("expected streamed text deltas, got %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "[DONE]") {
+		t.Fatalf("expected [DONE] in stream body, got %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsRejectsModelDowngrade(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	backend.textResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1-nano",
+		Content:   "downgraded",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"o3-pro",
+		"messages":[{"role":"user","content":"Hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadGateway, recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "gpt-4.1-nano") || !strings.Contains(recorder.Body.String(), "o3-pro") {
+		t.Fatalf("expected downgrade error to mention actual/requested models, got %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsRejectsTextImageInputs(t *testing.T) {
+	t.Helper()
+
+	_, _, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1",
+		"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}]}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "image inputs are not supported") {
+		t.Fatalf("expected unsupported image input error, got %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsRejectsUnknownModel(t *testing.T) {
+	t.Helper()
+
+	_, _, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4o-mini",
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "Unsupported model") {
+		t.Fatalf("expected unsupported model error, got %s", recorder.Body.String())
 	}
 }
 
