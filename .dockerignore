@@ -1,0 +1,9 @@
+*.log
+*.out
+*.tmp
+coverage.*
+_build/
+dist/
+tmp/
+Dockerfile.*
+*_test.go
