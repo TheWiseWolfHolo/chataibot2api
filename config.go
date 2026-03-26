@@ -15,6 +15,7 @@ type Config struct {
 	MailDomain     string
 	MailAdminToken string
 	APIBearerToken string
+	AdminToken     string
 }
 
 func LoadConfig(args []string, getenv func(string) string) (Config, error) {
@@ -27,6 +28,7 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	mailDomainFlag := fs.String("domain", "", "自建邮箱域名")
 	mailTokenFlag := fs.String("token", "", "自建邮箱管理员密码")
 	bearerTokenFlag := fs.String("bearer-token", "", "API 鉴权 Bearer Token")
+	adminTokenFlag := fs.String("admin-token", "", "管理 API 鉴权 Bearer Token")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -39,6 +41,7 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 		MailDomain:     strings.TrimSpace(*mailDomainFlag),
 		MailAdminToken: strings.TrimSpace(*mailTokenFlag),
 		APIBearerToken: strings.TrimSpace(*bearerTokenFlag),
+		AdminToken:     strings.TrimSpace(*adminTokenFlag),
 	}
 
 	if value := strings.TrimSpace(getenv("POOL_SIZE")); value != "" {
@@ -69,8 +72,11 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	if value := strings.TrimSpace(getenv("API_BEARER_TOKEN")); value != "" {
 		cfg.APIBearerToken = value
 	}
+	if value := strings.TrimSpace(getenv("ADMIN_TOKEN")); value != "" {
+		cfg.AdminToken = value
+	}
 
-	missing := make([]string, 0, 4)
+	missing := make([]string, 0, 5)
 	if cfg.MailAPIBaseURL == "" {
 		missing = append(missing, "MAIL_API_BASE_URL")
 	}
@@ -82,6 +88,9 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	}
 	if cfg.APIBearerToken == "" {
 		missing = append(missing, "API_BEARER_TOKEN")
+	}
+	if cfg.AdminToken == "" {
+		missing = append(missing, "ADMIN_TOKEN")
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required config: %s", strings.Join(missing, ", "))

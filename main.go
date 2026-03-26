@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"chataibot2api/api"
@@ -13,19 +11,27 @@ import (
 	"chataibot2api/mail"
 )
 
-var mailCFClient *mail.MailCFClient
-var apiClient *api.APIClient
+type APIClient interface {
+	UpdateUserSettings(jwtToken, aspectRatio string) bool
+	GenerateImage(prompt, provider, version, jwtToken string) (string, error)
+	EditImage(prompt, base64Data, model, jwtToken string) (string, error)
+	MergeImage(prompt string, base64Images []string, mergeType, jwtToken string) (string, error)
+	GetCount(jwtToken string) int
+	SendRegisterRequest(email string) bool
+	VerifyAccount(email, code string) string
+}
+
+type MailClient interface {
+	NewMail() string
+	FetchAndExtractCode(address string) (bool, string)
+}
+
+var mailCFClient MailClient
+var apiClient APIClient
 
 type Account struct {
 	JWT   string
 	Quota int
-}
-
-type SimplePool struct {
-	newChan  chan *Account
-	usedPool []*Account
-	maxSize  int
-	mu       sync.Mutex
 }
 
 type OpenAIImageReq struct {
@@ -87,168 +93,12 @@ func run(args []string, getenv func(string) string) error {
 	accountPool := StartPool(cfg.PoolSize)
 	fmt.Println("[*] 号池已启动，准备就绪...")
 
-	handler := NewServerHandler(cfg, accountPool)
+	app := NewApp(accountPool, apiClient, time.Now)
+	handler := NewServerHandler(cfg, app)
 
-	fmt.Printf("[*] OpenAI 兼容接口启动在 %d 端口，/v1/images/generations\n", cfg.Port)
+	fmt.Printf("[*] OpenAI 兼容接口启动在 %d 端口，/v1/images/generations /v1/models /v1/chat/completions\n", cfg.Port)
 
 	return http.ListenAndServe(fmt.Sprintf(":%d", cfg.Port), handler)
-}
-
-func StartPool(poolSize int) *SimplePool {
-	p := &SimplePool{
-		newChan:  make(chan *Account, 10),
-		usedPool: make([]*Account, 0, poolSize),
-		maxSize:  poolSize,
-	}
-
-	for i := 0; i < 3; i++ {
-		go func(workerID int) {
-			for {
-				success, jwt := CreateAccount()
-				if success {
-					p.newChan <- &Account{JWT: jwt, Quota: 65}
-				} else {
-					time.Sleep(3 * time.Second)
-				}
-			}
-		}(i)
-	}
-
-	return p
-}
-
-func (p *SimplePool) Acquire(cost int) *Account {
-	p.mu.Lock()
-
-	bestIdx := -1
-	for i, acc := range p.usedPool {
-		if acc.Quota >= cost {
-			if bestIdx == -1 || acc.Quota < p.usedPool[bestIdx].Quota {
-				bestIdx = i
-			}
-		}
-	}
-
-	if bestIdx != -1 {
-		acc := p.usedPool[bestIdx]
-		p.usedPool = append(p.usedPool[:bestIdx], p.usedPool[bestIdx+1:]...)
-		p.mu.Unlock()
-		return acc
-	}
-	p.mu.Unlock()
-
-	return <-p.newChan
-}
-
-func (p *SimplePool) Release(acc *Account) {
-	acc.Quota = apiClient.GetCount(acc.JWT)
-
-	if acc.Quota < 2 {
-		return
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if len(p.usedPool) < p.maxSize {
-		p.usedPool = append(p.usedPool, acc)
-		return
-	}
-
-	minIdx := 0
-	for i := 1; i < len(p.usedPool); i++ {
-		if p.usedPool[i].Quota < p.usedPool[minIdx].Quota {
-			minIdx = i
-		}
-	}
-
-	if acc.Quota > p.usedPool[minIdx].Quota {
-		p.usedPool[minIdx] = acc
-	}
-}
-
-func ImageHandler(pool *SimplePool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		var req OpenAIImageReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
-
-		if req.Model == "" {
-			req.Model = "gpt-image-1.5"
-		}
-		modelCfg, exists := modelRouter[req.Model]
-		if !exists {
-			http.Error(w, fmt.Sprintf("Unsupported model: %s", req.Model), http.StatusBadRequest)
-			return
-		}
-
-		isMergeMode := len(req.Images) > 1
-		isEditMode := req.Image != "" || len(req.Images) == 1
-
-		// 校验模型是否支持该模式
-		if isMergeMode && modelCfg.MergeMode == "" {
-			http.Error(w, fmt.Sprintf("Model '%s' does not support image merging", req.Model), http.StatusBadRequest)
-			return
-		}
-		if isEditMode && !isMergeMode && modelCfg.EditMode == "" {
-			http.Error(w, fmt.Sprintf("Model '%s' does not support image editing", req.Model), http.StatusBadRequest)
-			return
-		}
-
-		// 确定需要消耗的额度
-		requiredCost := modelCfg.Cost
-		if isMergeMode {
-			requiredCost = modelCfg.MergeCost
-		} else if isEditMode {
-			requiredCost = modelCfg.EditCost
-		}
-
-		ratio := parseRatio(req.Size)
-		acc := pool.Acquire(requiredCost)
-		defer pool.Release(acc)
-
-		success := apiClient.UpdateUserSettings(acc.JWT, ratio)
-		if !success {
-			http.Error(w, "Failed to update user settings", http.StatusInternalServerError)
-			return
-		}
-
-		var imgURL string
-		var err error
-
-		// 路由到对应的方法
-		if isMergeMode {
-			imgURL, err = apiClient.MergeImage(req.Prompt, req.Images, modelCfg.MergeMode, acc.JWT)
-		} else if isEditMode {
-			imgData := req.Image
-			if imgData == "" {
-				imgData = req.Images[0] // 兼容传了 Images 数组但只有一张图的情况
-			}
-			imgURL, err = apiClient.EditImage(req.Prompt, imgData, modelCfg.EditMode, acc.JWT)
-		} else {
-			imgURL, err = apiClient.GenerateImage(req.Prompt, modelCfg.Provider, modelCfg.Version, acc.JWT)
-		}
-
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Generation failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		resp := OpenAIImageResp{
-			Created: time.Now().Unix(),
-			Data:    []ImageData{{URL: imgURL}},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}
 }
 
 func parseRatio(size string) string {
