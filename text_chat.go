@@ -66,8 +66,8 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 
 func buildTextUpstreamRequest(req chatCompletionRequest) (UpstreamTextMessageRequest, string, int, error) {
 	model := strings.TrimSpace(req.Model)
-	modelCfg, exists := textModelRouter[model]
-	if !exists {
+	modelCfg, exists := lookupTextModel(model)
+	if !exists || modelCfg.Hidden {
 		return UpstreamTextMessageRequest{}, "", 0, fmt.Errorf("Unsupported model: %s", model)
 	}
 

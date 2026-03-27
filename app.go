@@ -53,7 +53,10 @@ func (a *App) Models() []string {
 	for modelID := range modelRouter {
 		models = append(models, modelID)
 	}
-	for modelID := range textModelRouter {
+	for modelID, cfg := range textModelRouter {
+		if cfg.Hidden {
+			continue
+		}
 		models = append(models, modelID)
 	}
 	sort.Strings(models)

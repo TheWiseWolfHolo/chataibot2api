@@ -65,10 +65,10 @@ type ModelConfig struct {
 }
 
 var modelRouter = map[string]ModelConfig{
-	"gpt-image-1.5":          {Provider: "GPT_IMAGE_1_5", Version: "", Cost: 12},
-	"gpt-image-1.5-high":     {Provider: "GPT_IMAGE_1_5_HIGH", Version: "", Cost: 40},
+	"gpt-image-1.5":          {Provider: "GPT_IMAGE_1_5", Version: "", Cost: 12, EditMode: "edit_gpt_1_5", EditCost: 12, MergeMode: "merge_gpt_1_5", MergeCost: 12},
+	"gpt-image-1.5-high":     {Provider: "GPT_IMAGE_1_5_HIGH", Version: "", Cost: 40, EditMode: "edit_gpt_1_5_high", EditCost: 40, MergeMode: "merge_gpt_1_5_high", MergeCost: 40},
 	"ideogram":               {Provider: "IDEOGRAM", Version: "", Cost: 8},
-	"google-nano-banana-pro": {Provider: "GOOGLE", Version: "nano-banana-pro", Cost: 60},
+	"google-nano-banana-pro": {Provider: "GOOGLE", Version: "nano-banana-pro", Cost: 60, EditMode: "edit_google_nano_banana_pro", EditCost: 60, MergeMode: "merge_google_nano_banana_pro", MergeCost: 60},
 	"google-nano-banana":     {Provider: "GOOGLE", Version: "nano-banana", Cost: 15, EditMode: "edit_google_nano_banana", EditCost: 15, MergeMode: "merge_google_nano_banana", MergeCost: 15},
 	"google-nano-banana-2":   {Provider: "GOOGLE", Version: "nano-banana-2", Cost: 30, EditMode: "edit_google_nano_banana_2", EditCost: 30, MergeMode: "merge_google_nano_banana_2", MergeCost: 30},
 	"midjourney-7":           {Provider: "MIDJOURNEY", Version: "7", Cost: 20},
