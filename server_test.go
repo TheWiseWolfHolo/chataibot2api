@@ -80,6 +80,8 @@ type fakeBackend struct {
 	textRequest    UpstreamTextMessageRequest
 	textRequestJWT string
 	textResponse   TextCompletionResult
+	textResponses  []TextCompletionResult
+	textCallCount  int
 	textErr        error
 
 	textStreamRequest    UpstreamTextMessageRequest
@@ -150,8 +152,20 @@ func (f *fakeBackend) CreateChatContext(model, title, jwtToken string) (int, err
 func (f *fakeBackend) SendTextMessage(req UpstreamTextMessageRequest, jwtToken string) (TextCompletionResult, error) {
 	f.textRequest = req
 	f.textRequestJWT = jwtToken
+	f.textCallCount++
 	if f.textErr != nil {
 		return TextCompletionResult{}, f.textErr
+	}
+
+	if len(f.textResponses) >= f.textCallCount {
+		resp := f.textResponses[f.textCallCount-1]
+		if resp.ChatModel == "" {
+			resp.ChatModel = req.Model
+		}
+		if resp.Content == "" {
+			resp.Content = "hello from text backend"
+		}
+		return resp, nil
 	}
 	if f.textResponse.ChatModel == "" {
 		f.textResponse.ChatModel = req.Model
@@ -534,6 +548,83 @@ func TestChatCompletionsSupportsTextChat(t *testing.T) {
 	}
 	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hello from text backend" {
 		t.Fatalf("unexpected text chat content: %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsAutoContinuesTruncatedCodeResponses(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	truncatedPrefix := "```html\n<!DOCTYPE html>\n<html>\n<body>\n<script>\n"
+	truncatedBody := "const wheel = {\n  prizes: [1,2,3,4,5,6],\n  colors: ['#f00','#0f0','#00f'],\n};\nfunction draw(){\n  const ctx = canvas.getContext('2d');\n  ctx.fillStyle = '#fff';\n}\n"
+	backend.textResponses = []TextCompletionResult{
+		{
+			ChatModel: "claude-4.6-sonnet",
+			Content:   truncatedPrefix + strings.Repeat(truncatedBody, 8) + "ctx.shadowColor =",
+		},
+		{
+			ChatModel: "claude-4.6-sonnet",
+			Content:   "  prizes: 6 };\n</script>\n</body>\n</html>\n```",
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"claude-4.6-sonnet",
+		"messages":[{"role":"user","content":"Write a single-file HTML page with CSS and JavaScript only. Return code only."}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if backend.textCallCount != 2 {
+		t.Fatalf("expected 2 text backend calls for continuation, got %d", backend.textCallCount)
+	}
+
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected JSON response, got error %v with body %s", err, recorder.Body.String())
+	}
+	content := resp.Choices[0].Message.Content
+	if !strings.Contains(content, "prizes: 6") || !strings.HasSuffix(strings.TrimSpace(content), "```") {
+		t.Fatalf("expected stitched continuation content, got %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsDoesNotContinueCompleteTextResponse(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	backend.textResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1",
+		Content:   "All done.",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1",
+		"messages":[{"role":"user","content":"Say all done."}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if backend.textCallCount != 1 {
+		t.Fatalf("expected 1 text backend call without continuation, got %d", backend.textCallCount)
 	}
 }
 

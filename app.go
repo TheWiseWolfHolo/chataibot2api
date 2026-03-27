@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,13 @@ type App struct {
 	backend ImageBackend
 	now     func() time.Time
 }
+
+const (
+	maxTextContinuationTurns = 2
+	minTruncationContentSize = 1200
+)
+
+var abruptTextEndingPattern = regexp.MustCompile(`[=\(\[\{,\.:+\-/*_'"<>]$`)
 
 func NewApp(pool PoolManager, backend ImageBackend, now func() time.Time) *App {
 	if now == nil {
@@ -152,7 +160,12 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 		return TextCompletionResult{}, wrapTextBackendError("text generation failed", err)
 	}
 
-	return validateTextCompletionResult(req.Model, resp)
+	resp, err = validateTextCompletionResult(req.Model, resp)
+	if err != nil {
+		return TextCompletionResult{}, err
+	}
+
+	return a.extendTruncatedTextCompletion(messageReq, acc.JWT, resp)
 }
 
 func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEvent) error) (TextCompletionResult, error) {
@@ -204,6 +217,156 @@ func validateTextCompletionResult(requestedModel string, resp TextCompletionResu
 		return TextCompletionResult{}, newStatusError(http.StatusBadGateway, "upstream returned empty text completion")
 	}
 	return resp, nil
+}
+
+func (a *App) extendTruncatedTextCompletion(messageReq UpstreamTextMessageRequest, jwtToken string, resp TextCompletionResult) (TextCompletionResult, error) {
+	result := resp
+	if !shouldAttemptTextContinuation(messageReq.Text, result.Content) {
+		return result, nil
+	}
+
+	for turn := 0; turn < maxTextContinuationTurns; turn++ {
+		followUpReq := UpstreamTextMessageRequest{
+			Text:                   buildTextContinuationPrompt(result.Content),
+			ChatID:                 messageReq.ChatID,
+			Model:                  messageReq.Model,
+			WithPotentialQuestions: false,
+		}
+
+		next, err := a.backend.SendTextMessage(followUpReq, jwtToken)
+		if err != nil {
+			return TextCompletionResult{}, wrapTextBackendError("text continuation failed", err)
+		}
+
+		next, err = validateTextCompletionResult(messageReq.Model, next)
+		if err != nil {
+			return TextCompletionResult{}, err
+		}
+		if strings.TrimSpace(next.Content) == "" {
+			return TextCompletionResult{}, newStatusError(http.StatusBadGateway, "upstream returned empty continuation")
+		}
+
+		result.Content = mergeTextContinuation(result.Content, next.Content)
+		result.ChatModel = next.ChatModel
+
+		if !shouldAttemptTextContinuation(messageReq.Text, result.Content) {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+func shouldAttemptTextContinuation(prompt string, content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if len([]rune(trimmed)) < minTruncationContentSize {
+		return false
+	}
+	if !isCodeLikeRequest(prompt, trimmed) {
+		return false
+	}
+	if hasUnclosedCodeFence(trimmed) {
+		return true
+	}
+	return looksAbruptlyCut(trimmed)
+}
+
+func isCodeLikeRequest(prompt string, content string) bool {
+	combined := strings.ToLower(strings.TrimSpace(prompt + "\n" + content))
+	keywords := []string{
+		"html", "css", "javascript", "single-file", "single file", "code", "```",
+		"<!doctype", "<html", "<script", "function ", "const ", "let ",
+		"单文件", "代码", "页面", "实现", "html 页面", "js", "css 和 js",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(combined, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnclosedCodeFence(content string) bool {
+	return strings.Count(content, "```")%2 == 1
+}
+
+func looksAbruptlyCut(content string) bool {
+	lines := strings.Split(strings.TrimRight(content, "\r\n\t "), "\n")
+	if len(lines) == 0 {
+		return false
+	}
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last == "" {
+		return false
+	}
+	if strings.HasSuffix(last, "</html>") || strings.HasSuffix(last, "</body>") || strings.HasSuffix(last, "</script>") || strings.HasSuffix(last, "</style>") {
+		return false
+	}
+
+	lastRune := []rune(last)[len([]rune(last))-1]
+	if abruptTextEndingPattern.MatchString(string(lastRune)) {
+		return true
+	}
+
+	safeEndings := []string{";", "}", ")", "]", ".", "。", "!", "！", "?", "？", "\"", "'", "`", ","}
+	for _, ending := range safeEndings {
+		if strings.HasSuffix(last, ending) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func buildTextContinuationPrompt(current string) string {
+	prompt := "Continue exactly from where your previous answer stopped. Output only the remaining content with no introduction and no repeated text."
+	if hasUnclosedCodeFence(current) {
+		return prompt + " The previous answer already started a markdown code block; continue inside the same code block and close it when the code is complete."
+	}
+	return prompt
+}
+
+func mergeTextContinuation(existing string, continuation string) string {
+	mergedContinuation := stripRedundantCodeFence(existing, continuation)
+
+	existingRunes := []rune(existing)
+	continuationRunes := []rune(mergedContinuation)
+	maxOverlap := minInt(len(existingRunes), len(continuationRunes), 240)
+	for overlap := maxOverlap; overlap >= 24; overlap-- {
+		if string(existingRunes[len(existingRunes)-overlap:]) == string(continuationRunes[:overlap]) {
+			return string(existingRunes) + string(continuationRunes[overlap:])
+		}
+	}
+
+	return existing + mergedContinuation
+}
+
+func stripRedundantCodeFence(existing string, continuation string) string {
+	if !hasUnclosedCodeFence(existing) {
+		return continuation
+	}
+
+	trimmed := strings.TrimLeft(continuation, "\r\n\t ")
+	prefixes := []string{"```html\r\n", "```html\n", "```\r\n", "```\n"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			return strings.TrimPrefix(trimmed, prefix)
+		}
+	}
+	return continuation
+}
+
+func minInt(values ...int) int {
+	if len(values) == 0 {
+		return 0
+	}
+	min := values[0]
+	for _, value := range values[1:] {
+		if value < min {
+			min = value
+		}
+	}
+	return min
 }
 
 func ensureModelMatch(requestedModel string, actualModel string) error {
