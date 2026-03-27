@@ -32,7 +32,7 @@ func (a *App) HandleImagesGenerations(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := a.Generate(req)
 	if err != nil {
-		http.Error(w, err.Error(), statusCodeForError(err))
+		writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 		return
 	}
 

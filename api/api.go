@@ -263,6 +263,9 @@ func (c *APIClient) GenerateImage(prompt, provider, version, jwtToken string) (s
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", parseUpstreamError(resp.StatusCode, body)
+	}
 
 	var imgResp ChataibotImageResp
 	if err := json.Unmarshal(body, &imgResp); err != nil {
@@ -338,6 +341,9 @@ func (c *APIClient) EditImage(prompt, base64Data, model, jwtToken string) (strin
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", parseUpstreamError(resp.StatusCode, respBody)
+	}
 
 	var imgResp ChataibotEditImageResp
 	if err := json.Unmarshal(respBody, &imgResp); err != nil {
@@ -418,6 +424,9 @@ func (c *APIClient) MergeImage(prompt string, base64Images []string, mergeType, 
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", parseUpstreamError(resp.StatusCode, respBody)
+	}
 
 	var imgResp ChataibotEditImageResp
 	if err := json.Unmarshal(respBody, &imgResp); err != nil {

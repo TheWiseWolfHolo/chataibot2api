@@ -119,7 +119,7 @@ func (a *App) Generate(req OpenAIImageReq) (OpenAIImageResp, error) {
 		imgURL, err = a.backend.GenerateImage(req.Prompt, modelCfg.Provider, modelCfg.Version, acc.JWT)
 	}
 	if err != nil {
-		return OpenAIImageResp{}, newStatusError(http.StatusInternalServerError, fmt.Sprintf("Generation failed: %v", err))
+		return OpenAIImageResp{}, wrapImageBackendError("Generation failed", err)
 	}
 
 	return OpenAIImageResp{
@@ -222,6 +222,21 @@ func wrapTextBackendError(prefix string, err error) error {
 	if err == nil {
 		return nil
 	}
+	var upstreamErr *protocol.UpstreamError
+	if errors.As(err, &upstreamErr) && upstreamErr != nil {
+		return newTypedStatusError(upstreamErr.StatusCode, upstreamErr.Message, upstreamErr.Type)
+	}
+	if statusCodeForError(err) != http.StatusInternalServerError {
+		return err
+	}
+	return newStatusError(http.StatusInternalServerError, fmt.Sprintf("%s: %v", prefix, err))
+}
+
+func wrapImageBackendError(prefix string, err error) error {
+	if err == nil {
+		return nil
+	}
+
 	var upstreamErr *protocol.UpstreamError
 	if errors.As(err, &upstreamErr) && upstreamErr != nil {
 		return newTypedStatusError(upstreamErr.StatusCode, upstreamErr.Message, upstreamErr.Type)

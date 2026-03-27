@@ -67,6 +67,9 @@ type fakeBackend struct {
 	generateURL  string
 	editURL      string
 	mergeURL     string
+	generateErr  error
+	editErr      error
+	mergeErr     error
 
 	textContextModel string
 	textContextTitle string
@@ -96,6 +99,9 @@ func (f *fakeBackend) GenerateImage(prompt, provider, version, _ string) (string
 	f.lastPrompt = prompt
 	f.lastModel = provider
 	f.lastVersion = version
+	if f.generateErr != nil {
+		return "", f.generateErr
+	}
 	if f.generateURL == "" {
 		f.generateURL = "https://img.example.com/generated.png"
 	}
@@ -106,6 +112,9 @@ func (f *fakeBackend) EditImage(prompt, imageData, mode, _ string) (string, erro
 	f.lastPrompt = prompt
 	f.lastImage = imageData
 	f.lastEditMode = mode
+	if f.editErr != nil {
+		return "", f.editErr
+	}
 	if f.editURL == "" {
 		f.editURL = "https://img.example.com/edited.png"
 	}
@@ -116,6 +125,9 @@ func (f *fakeBackend) MergeImage(prompt string, images []string, mode, _ string)
 	f.lastPrompt = prompt
 	f.lastImages = append([]string(nil), images...)
 	f.lastMerge = mode
+	if f.mergeErr != nil {
+		return "", f.mergeErr
+	}
 	if f.mergeURL == "" {
 		f.mergeURL = "https://img.example.com/merged.png"
 	}
@@ -651,6 +663,43 @@ func TestChatCompletionsSurfacesSubscriptionErrorsAsForbidden(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "CanNotChangeGPTModel") {
 		t.Fatalf("expected upstream error type to be preserved, got %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsSurfacesImageSubscriptionErrorsAsForbidden(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	backend.editErr = &protocol.UpstreamError{
+		StatusCode: http.StatusForbidden,
+		Message:    "The model is available through subscriptions Standard ⭐, Premium 💎, Pro 🚀, Business 💼",
+		Type:       "CanNotUseGptImageGenerate",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-image-1.5",
+		"messages":[{
+			"role":"user",
+			"content":[
+				{"type":"text","text":"edit this"},
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}
+			]
+		}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusForbidden, recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "subscriptions Standard") {
+		t.Fatalf("expected subscription guidance in response, got %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "CanNotUseGptImageGenerate") {
+		t.Fatalf("expected upstream image error type to be preserved, got %s", recorder.Body.String())
 	}
 }
 

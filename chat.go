@@ -94,7 +94,7 @@ func (a *App) handleImageChatCompletions(w http.ResponseWriter, req chatCompleti
 
 	resp, genErr := a.Generate(imageReq)
 	if genErr != nil {
-		writeOpenAIError(w, statusCodeForError(genErr), genErr.Error(), "generation_error")
+		writeOpenAIError(w, statusCodeForError(genErr), genErr.Error(), errorTypeForError(genErr, "generation_error"))
 		return
 	}
 
