@@ -93,7 +93,7 @@ func run(args []string, getenv func(string) string) error {
 	mailCFClient = mail.NewMailCFClient(cfg.MailAPIBaseURL, cfg.MailDomain, cfg.MailAdminToken)
 	apiClient = api.NewAPIClient()
 
-	accountPool := StartPool(cfg.PoolSize)
+	accountPool := StartPool(cfg)
 	fmt.Println("[*] 号池已启动，准备就绪...")
 
 	app := NewApp(accountPool, apiClient, time.Now)

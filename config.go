@@ -9,13 +9,15 @@ import (
 )
 
 type Config struct {
-	PoolSize       int
-	Port           int
-	MailAPIBaseURL string
-	MailDomain     string
-	MailAdminToken string
-	APIBearerToken string
-	AdminToken     string
+	PoolSize                 int
+	PoolLowWatermark         int
+	PoolPruneIntervalSeconds int
+	Port                     int
+	MailAPIBaseURL           string
+	MailDomain               string
+	MailAdminToken           string
+	APIBearerToken           string
+	AdminToken               string
 }
 
 func LoadConfig(args []string, getenv func(string) string) (Config, error) {
@@ -23,6 +25,8 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	fs.SetOutput(io.Discard)
 
 	poolFlag := fs.Int("pool", 10, "指定号池数量")
+	poolLowWatermarkFlag := fs.Int("pool-low-watermark", 0, "号池自动补号低水位，达到后自动补回目标池大小")
+	poolPruneIntervalFlag := fs.Int("pool-prune-interval", 300, "号池自动清理失效账号间隔（秒）")
 	portFlag := fs.Int("port", 8080, "服务端口")
 	mailAPIFlag := fs.String("api", "", "自建邮箱 API 地址")
 	mailDomainFlag := fs.String("domain", "", "自建邮箱域名")
@@ -35,13 +39,15 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	}
 
 	cfg := Config{
-		PoolSize:       *poolFlag,
-		Port:           *portFlag,
-		MailAPIBaseURL: strings.TrimSpace(*mailAPIFlag),
-		MailDomain:     strings.TrimSpace(*mailDomainFlag),
-		MailAdminToken: strings.TrimSpace(*mailTokenFlag),
-		APIBearerToken: strings.TrimSpace(*bearerTokenFlag),
-		AdminToken:     strings.TrimSpace(*adminTokenFlag),
+		PoolSize:                 *poolFlag,
+		PoolLowWatermark:         *poolLowWatermarkFlag,
+		PoolPruneIntervalSeconds: *poolPruneIntervalFlag,
+		Port:                     *portFlag,
+		MailAPIBaseURL:           strings.TrimSpace(*mailAPIFlag),
+		MailDomain:               strings.TrimSpace(*mailDomainFlag),
+		MailAdminToken:           strings.TrimSpace(*mailTokenFlag),
+		APIBearerToken:           strings.TrimSpace(*bearerTokenFlag),
+		AdminToken:               strings.TrimSpace(*adminTokenFlag),
 	}
 
 	if value := strings.TrimSpace(getenv("POOL_SIZE")); value != "" {
@@ -50,6 +56,20 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("invalid POOL_SIZE %q: %w", value, err)
 		}
 		cfg.PoolSize = parsed
+	}
+	if value := strings.TrimSpace(getenv("POOL_LOW_WATERMARK")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid POOL_LOW_WATERMARK %q: %w", value, err)
+		}
+		cfg.PoolLowWatermark = parsed
+	}
+	if value := strings.TrimSpace(getenv("POOL_PRUNE_INTERVAL_SECONDS")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid POOL_PRUNE_INTERVAL_SECONDS %q: %w", value, err)
+		}
+		cfg.PoolPruneIntervalSeconds = parsed
 	}
 
 	if value := strings.TrimSpace(getenv("PORT")); value != "" {
