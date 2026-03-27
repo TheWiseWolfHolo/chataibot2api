@@ -697,6 +697,63 @@ func TestChatCompletionsStreamsTextChat(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), "[DONE]") {
 		t.Fatalf("expected [DONE] in stream body, got %s", recorder.Body.String())
 	}
+	if backend.textCallCount != 0 {
+		t.Fatalf("expected no continuation call for complete stream, got %d", backend.textCallCount)
+	}
+}
+
+func TestChatCompletionsStreamsTextChatAutoContinuesTruncatedCodeResponses(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	truncatedPrefix := "```html\n<!DOCTYPE html>\n<html>\n<body>\n<script>\n"
+	truncatedBody := "const wheel = {\n  prizes: [1,2,3,4,5,6],\n  colors: ['#f00','#0f0','#00f'],\n};\nfunction draw(){\n  const ctx = canvas.getContext('2d');\n  ctx.fillStyle = '#fff';\n}\n"
+	truncatedContent := truncatedPrefix + strings.Repeat(truncatedBody, 8) + "ctx.shadowColor ="
+	backend.textStreamEvents = []TextStreamEvent{
+		{Type: "botType", ChatModel: "claude-4.6-sonnet"},
+		{Type: "chunk", Delta: truncatedPrefix + strings.Repeat(truncatedBody, 4)},
+		{Type: "chunk", Delta: strings.Repeat(truncatedBody, 4) + "ctx.shadowColor ="},
+	}
+	backend.textStreamResponse = TextCompletionResult{
+		ChatModel: "claude-4.6-sonnet",
+		Content:   truncatedContent,
+	}
+	backend.textResponses = []TextCompletionResult{
+		{
+			ChatModel: "claude-4.6-sonnet",
+			Content:   "  prizes: 6 };\n</script>\n</body>\n</html>\n```",
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"claude-4.6-sonnet",
+		"stream":true,
+		"messages":[{"role":"user","content":"Write a single-file HTML page with CSS and JavaScript only. Return code only."}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("expected SSE content type, got headers=%v body=%s", recorder.Header(), recorder.Body.String())
+	}
+	if backend.textCallCount != 1 {
+		t.Fatalf("expected 1 continuation call for truncated stream, got %d", backend.textCallCount)
+	}
+	if !strings.Contains(recorder.Body.String(), "ctx.shadowColor =") {
+		t.Fatalf("expected truncated stream prefix to be preserved, got %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "prizes: 6") {
+		t.Fatalf("expected continuation delta in stream body, got %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "[DONE]") {
+		t.Fatalf("expected [DONE] in stream body, got %s", recorder.Body.String())
+	}
 }
 
 func TestChatCompletionsRejectsModelDowngrade(t *testing.T) {

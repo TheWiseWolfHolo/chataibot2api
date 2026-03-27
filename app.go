@@ -187,11 +187,15 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 	}
 
 	messageReq.ChatID = chatID
+	streamedAnyChunk := false
 	resp, err := a.backend.StreamTextMessage(messageReq, acc.JWT, func(event TextStreamEvent) error {
 		if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
 			if mismatchErr := ensureModelMatch(req.Model, event.ChatModel); mismatchErr != nil {
 				return mismatchErr
 			}
+		}
+		if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "" {
+			streamedAnyChunk = true
 		}
 		if emit == nil {
 			return nil
@@ -202,7 +206,23 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 		return TextCompletionResult{}, wrapTextBackendError("text streaming failed", err)
 	}
 
-	return validateTextCompletionResult(req.Model, resp)
+	resp, err = validateTextCompletionResult(req.Model, resp)
+	if err != nil {
+		return TextCompletionResult{}, err
+	}
+
+	if emit != nil && !streamedAnyChunk && shouldAttemptTextContinuation(messageReq.Text, resp.Content) {
+		if err := emit(TextStreamEvent{Type: "chunk", Delta: resp.Content}); err != nil {
+			return TextCompletionResult{}, err
+		}
+	}
+
+	return a.continueTruncatedTextCompletion(messageReq, acc.JWT, resp, func(delta string) error {
+		if emit == nil || delta == "" {
+			return nil
+		}
+		return emit(TextStreamEvent{Type: "chunk", Delta: delta})
+	})
 }
 
 func validateTextCompletionResult(requestedModel string, resp TextCompletionResult) (TextCompletionResult, error) {
@@ -220,6 +240,10 @@ func validateTextCompletionResult(requestedModel string, resp TextCompletionResu
 }
 
 func (a *App) extendTruncatedTextCompletion(messageReq UpstreamTextMessageRequest, jwtToken string, resp TextCompletionResult) (TextCompletionResult, error) {
+	return a.continueTruncatedTextCompletion(messageReq, jwtToken, resp, nil)
+}
+
+func (a *App) continueTruncatedTextCompletion(messageReq UpstreamTextMessageRequest, jwtToken string, resp TextCompletionResult, emitDelta func(string) error) (TextCompletionResult, error) {
 	result := resp
 	if !shouldAttemptTextContinuation(messageReq.Text, result.Content) {
 		return result, nil
@@ -246,7 +270,13 @@ func (a *App) extendTruncatedTextCompletion(messageReq UpstreamTextMessageReques
 			return TextCompletionResult{}, newStatusError(http.StatusBadGateway, "upstream returned empty continuation")
 		}
 
-		result.Content = mergeTextContinuation(result.Content, next.Content)
+		mergedContent, appendedDelta := mergeTextContinuationWithDelta(result.Content, next.Content)
+		if emitDelta != nil && appendedDelta != "" {
+			if err := emitDelta(appendedDelta); err != nil {
+				return TextCompletionResult{}, err
+			}
+		}
+		result.Content = mergedContent
 		result.ChatModel = next.ChatModel
 
 		if !shouldAttemptTextContinuation(messageReq.Text, result.Content) {
@@ -333,6 +363,11 @@ func buildTextContinuationPrompt(originalPrompt string, current string) string {
 }
 
 func mergeTextContinuation(existing string, continuation string) string {
+	merged, _ := mergeTextContinuationWithDelta(existing, continuation)
+	return merged
+}
+
+func mergeTextContinuationWithDelta(existing string, continuation string) (string, string) {
 	mergedContinuation := stripRedundantCodeFence(existing, continuation)
 
 	existingRunes := []rune(existing)
@@ -340,11 +375,12 @@ func mergeTextContinuation(existing string, continuation string) string {
 	maxOverlap := minInt(len(existingRunes), len(continuationRunes), 240)
 	for overlap := maxOverlap; overlap >= 24; overlap-- {
 		if string(existingRunes[len(existingRunes)-overlap:]) == string(continuationRunes[:overlap]) {
-			return string(existingRunes) + string(continuationRunes[overlap:])
+			appended := string(continuationRunes[overlap:])
+			return string(existingRunes) + appended, appended
 		}
 	}
 
-	return existing + mergedContinuation
+	return existing + mergedContinuation, mergedContinuation
 }
 
 func stripRedundantCodeFence(existing string, continuation string) string {
