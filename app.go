@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"chataibot2api/protocol"
 )
 
 type ImageBackend interface {
@@ -216,6 +219,10 @@ func wrapTextBackendError(prefix string, err error) error {
 	if err == nil {
 		return nil
 	}
+	var upstreamErr *protocol.UpstreamError
+	if errors.As(err, &upstreamErr) && upstreamErr != nil {
+		return newTypedStatusError(upstreamErr.StatusCode, upstreamErr.Message, upstreamErr.Type)
+	}
 	if statusCodeForError(err) != http.StatusInternalServerError {
 		return err
 	}
@@ -225,6 +232,7 @@ func wrapTextBackendError(prefix string, err error) error {
 type statusError struct {
 	StatusCode int
 	Message    string
+	ErrorType  string
 }
 
 func (e *statusError) Error() string {
@@ -238,17 +246,40 @@ func newStatusError(statusCode int, message string) error {
 	}
 }
 
+func newTypedStatusError(statusCode int, message string, errorType string) error {
+	return &statusError{
+		StatusCode: statusCode,
+		Message:    message,
+		ErrorType:  strings.TrimSpace(errorType),
+	}
+}
+
 func statusCodeForError(err error) int {
 	if err == nil {
 		return http.StatusOK
 	}
 
 	var withStatus *statusError
-	if ok := errorAs(err, &withStatus); ok && withStatus != nil {
+	if errors.As(err, &withStatus) && withStatus != nil {
 		return withStatus.StatusCode
 	}
 
 	return http.StatusInternalServerError
+}
+
+func errorTypeForError(err error, fallback string) string {
+	if strings.TrimSpace(fallback) == "" {
+		fallback = "invalid_request_error"
+	}
+	if err == nil {
+		return fallback
+	}
+
+	var withStatus *statusError
+	if errors.As(err, &withStatus) && withStatus != nil && strings.TrimSpace(withStatus.ErrorType) != "" {
+		return strings.TrimSpace(withStatus.ErrorType)
+	}
+	return fallback
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
@@ -268,16 +299,4 @@ func writeOpenAIError(w http.ResponseWriter, statusCode int, message string, err
 			"type":    errorType,
 		},
 	})
-}
-
-func errorAs(err error, target **statusError) bool {
-	if err == nil {
-		return false
-	}
-	statusErr, ok := err.(*statusError)
-	if !ok {
-		return false
-	}
-	*target = statusErr
-	return true
 }

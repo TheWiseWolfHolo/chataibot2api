@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"chataibot2api/protocol"
 )
 
 type fakePool struct {
@@ -523,6 +525,37 @@ func TestChatCompletionsRejectsModelDowngrade(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "gpt-4.1-nano") || !strings.Contains(recorder.Body.String(), "o3-pro") {
 		t.Fatalf("expected downgrade error to mention actual/requested models, got %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsSurfacesSubscriptionErrorsAsForbidden(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	backend.textErr = &protocol.UpstreamError{
+		StatusCode: http.StatusForbidden,
+		Message:    "The model is available through subscriptions Pro 🚀, Business 💼",
+		Type:       "CanNotChangeGPTModel",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-5.4-pro",
+		"messages":[{"role":"user","content":"Hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusForbidden, recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "subscriptions Pro") {
+		t.Fatalf("expected subscription guidance in response, got %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "CanNotChangeGPTModel") {
+		t.Fatalf("expected upstream error type to be preserved, got %s", recorder.Body.String())
 	}
 }
 

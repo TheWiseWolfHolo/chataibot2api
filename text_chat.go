@@ -22,27 +22,27 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 		})
 		if err != nil {
 			if !writer.started {
-				writeOpenAIError(w, statusCodeForError(err), err.Error(), "generation_error")
+				writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 			}
 			return
 		}
 		if !writer.wroteContent && strings.TrimSpace(resp.Content) != "" {
 			if err := writer.WriteDelta(resp.Content); err != nil {
 				if !writer.started {
-					writeOpenAIError(w, statusCodeForError(err), err.Error(), "generation_error")
+					writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 				}
 				return
 			}
 		}
 		if err := writer.Finish(); err != nil && !writer.started {
-			writeOpenAIError(w, statusCodeForError(err), err.Error(), "generation_error")
+			writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 		}
 		return
 	}
 
 	resp, err := a.CompleteTextChat(req)
 	if err != nil {
-		writeOpenAIError(w, statusCodeForError(err), err.Error(), "generation_error")
+		writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 		return
 	}
 

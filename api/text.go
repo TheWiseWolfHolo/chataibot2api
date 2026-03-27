@@ -36,7 +36,7 @@ func (c *APIClient) CreateChatContext(model, title, jwtToken string) (int, error
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return 0, parseUpstreamError(resp.StatusCode, body)
 	}
 
 	var parsed struct {
@@ -69,7 +69,7 @@ func (c *APIClient) SendTextMessage(req protocol.TextMessageRequest, jwtToken st
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return protocol.TextCompletionResult{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return protocol.TextCompletionResult{}, parseUpstreamError(resp.StatusCode, body)
 	}
 
 	result, jobID, err := parseDirectTextCompletion(body)
@@ -101,7 +101,7 @@ func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return protocol.TextCompletionResult{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return protocol.TextCompletionResult{}, parseUpstreamError(resp.StatusCode, body)
 	}
 
 	decoder := json.NewDecoder(resp.Body)
@@ -189,7 +189,7 @@ func (c *APIClient) pollTextJob(jobID int, jwtToken string) (protocol.TextComple
 		resp.Body.Close()
 
 		if resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode == http.StatusNotFound {
-			return protocol.TextCompletionResult{}, fmt.Errorf("job poll HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			return protocol.TextCompletionResult{}, parseUpstreamError(resp.StatusCode, body)
 		}
 		if resp.StatusCode != http.StatusOK {
 			continue
@@ -278,4 +278,31 @@ func applyUpstreamHeaders(req *http.Request, jwtToken string) {
 	req.Header.Set("x-distribution-channel", "web")
 	req.Header.Set("Accept-Language", "en")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/146.0.0.0 Safari/537.36")
+}
+
+func parseUpstreamError(statusCode int, body []byte) error {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return &protocol.UpstreamError{
+			StatusCode: statusCode,
+			Message:    fmt.Sprintf("HTTP %d", statusCode),
+		}
+	}
+
+	var payload struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil && strings.TrimSpace(payload.Message) != "" {
+		return &protocol.UpstreamError{
+			StatusCode: statusCode,
+			Message:    strings.TrimSpace(payload.Message),
+			Type:       strings.TrimSpace(payload.Type),
+		}
+	}
+
+	return &protocol.UpstreamError{
+		StatusCode: statusCode,
+		Message:    fmt.Sprintf("HTTP %d: %s", statusCode, trimmed),
+	}
 }
