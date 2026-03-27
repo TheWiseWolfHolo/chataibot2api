@@ -43,6 +43,7 @@ const (
 )
 
 var abruptTextEndingPattern = regexp.MustCompile(`[=\(\[\{,\.:+\-/*_'"<>]$`)
+var htmlDocumentStartPattern = regexp.MustCompile(`(?i)<!doctype html>|<html(?:\s|>)`)
 
 func NewApp(pool PoolManager, backend ImageBackend, now func() time.Time) *App {
 	if now == nil {
@@ -276,7 +277,7 @@ func (a *App) continueTruncatedTextCompletion(messageReq UpstreamTextMessageRequ
 				return TextCompletionResult{}, err
 			}
 		}
-		result.Content = mergedContent
+		result.Content = sanitizeMergedCodeContinuation(mergedContent)
 		result.ChatModel = next.ChatModel
 
 		if !shouldAttemptTextContinuation(messageReq.Text, result.Content) {
@@ -381,6 +382,51 @@ func mergeTextContinuationWithDelta(existing string, continuation string) (strin
 	}
 
 	return existing + mergedContinuation, mergedContinuation
+}
+
+func sanitizeMergedCodeContinuation(content string) string {
+	if htmlDoc, ok := extractLastCompleteHTMLDocument(content); ok {
+		if prefix := leadingCodeFencePrefix(content); prefix != "" {
+			return prefix + strings.TrimLeft(htmlDoc, "\r\n\t ") + "\n```"
+		}
+		return strings.TrimSpace(htmlDoc)
+	}
+
+	return content
+}
+
+func extractLastCompleteHTMLDocument(content string) (string, bool) {
+	matches := htmlDocumentStartPattern.FindAllStringIndex(content, -1)
+	if len(matches) == 0 {
+		return "", false
+	}
+
+	lower := strings.ToLower(content)
+	lastComplete := ""
+	for _, match := range matches {
+		start := match[0]
+		endOffset := strings.Index(lower[start:], "</html>")
+		if endOffset == -1 {
+			continue
+		}
+		lastComplete = content[start : start+endOffset+len("</html>")]
+	}
+	if lastComplete == "" {
+		return "", false
+	}
+	return lastComplete, true
+}
+
+func leadingCodeFencePrefix(content string) string {
+	trimmed := strings.TrimLeft(content, "\r\n\t ")
+	if !strings.HasPrefix(trimmed, "```") {
+		return ""
+	}
+	newlineIndex := strings.Index(trimmed, "\n")
+	if newlineIndex == -1 {
+		return "```\n"
+	}
+	return trimmed[:newlineIndex+1]
 }
 
 func stripRedundantCodeFence(existing string, continuation string) string {

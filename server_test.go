@@ -601,6 +601,40 @@ func TestChatCompletionsAutoContinuesTruncatedCodeResponses(t *testing.T) {
 	}
 }
 
+func TestSanitizeMergedCodeContinuationTrimsTrailingExplanationAfterHTML(t *testing.T) {
+	t.Helper()
+
+	input := "```html\n<!DOCTYPE html>\n<html>\n<body>\n<script>\nconsole.log('ok');\n</script>\n</body>\n</html>This is already the complete end of the HTML file."
+	got := sanitizeMergedCodeContinuation(input)
+
+	if !strings.HasSuffix(strings.TrimSpace(got), "```") {
+		t.Fatalf("expected sanitizer to close code fence, got %q", got)
+	}
+	if strings.Contains(got, "This is already the complete end") {
+		t.Fatalf("expected trailing explanation to be removed, got %q", got)
+	}
+	if !strings.Contains(got, "</html>\n```") {
+		t.Fatalf("expected html document to be preserved and fenced, got %q", got)
+	}
+}
+
+func TestSanitizeMergedCodeContinuationKeepsLastCompleteHTMLDocument(t *testing.T) {
+	t.Helper()
+
+	input := "```html\n<!DOCTYPE html>\n<html>\n<body>\nfirst\n</body>\n</html><!DOCTYPE html>\n<html>\n<body>\nsecond\n</body>\n</html>\n```"
+	got := sanitizeMergedCodeContinuation(input)
+
+	if strings.Contains(got, "first") {
+		t.Fatalf("expected earlier duplicated html document to be dropped, got %q", got)
+	}
+	if !strings.Contains(got, "second") {
+		t.Fatalf("expected last complete html document to be kept, got %q", got)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), "```") {
+		t.Fatalf("expected sanitized duplicated html to end with code fence, got %q", got)
+	}
+}
+
 func TestChatCompletionsDoesNotContinueCompleteTextResponse(t *testing.T) {
 	t.Helper()
 
