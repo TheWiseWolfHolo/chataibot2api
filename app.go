@@ -227,7 +227,7 @@ func (a *App) extendTruncatedTextCompletion(messageReq UpstreamTextMessageReques
 
 	for turn := 0; turn < maxTextContinuationTurns; turn++ {
 		followUpReq := UpstreamTextMessageRequest{
-			Text:                   buildTextContinuationPrompt(result.Content),
+			Text:                   buildTextContinuationPrompt(messageReq.Text, result.Content),
 			ChatID:                 messageReq.ChatID,
 			Model:                  messageReq.Model,
 			WithPotentialQuestions: false,
@@ -318,12 +318,18 @@ func looksAbruptlyCut(content string) bool {
 	return true
 }
 
-func buildTextContinuationPrompt(current string) string {
-	prompt := "Continue exactly from where your previous answer stopped. Output only the remaining content with no introduction and no repeated text."
+func buildTextContinuationPrompt(originalPrompt string, current string) string {
+	summary := firstNRunes(strings.TrimSpace(originalPrompt), 700)
+	tail := lastNRunes(strings.TrimSpace(current), 450)
+	prompt := fmt.Sprintf(
+		"Your previous code answer was cut off.\nOriginal request summary:\n%s\n\nThe last part already returned (do not repeat it):\n%s\n\nContinue with only the missing remainder starting immediately after the final character above. Do not explain, do not apologize, and do not repeat any existing text.",
+		summary,
+		tail,
+	)
 	if hasUnclosedCodeFence(current) {
-		return prompt + " The previous answer already started a markdown code block; continue inside the same code block and close it when the code is complete."
+		prompt += " If a markdown code block is already open, continue inside the same code block and close it when the code is complete."
 	}
-	return prompt
+	return firstNRunes(prompt, 2200)
 }
 
 func mergeTextContinuation(existing string, continuation string) string {
@@ -367,6 +373,22 @@ func minInt(values ...int) int {
 		}
 	}
 	return min
+}
+
+func firstNRunes(value string, limit int) string {
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
+
+func lastNRunes(value string, limit int) string {
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
+		return value
+	}
+	return string(runes[len(runes)-limit:])
 }
 
 func ensureModelMatch(requestedModel string, actualModel string) error {
