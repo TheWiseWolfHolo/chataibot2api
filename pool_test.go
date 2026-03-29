@@ -50,6 +50,13 @@ func cloneAccounts(accounts []*Account) []*Account {
 	return cloned
 }
 
+func (f *fakePool) AdminQuotaRows() []AdminQuotaRow {
+	if f == nil {
+		return nil
+	}
+	return nil
+}
+
 func TestSimplePoolStartFillTaskCreatesAccountsAsynchronously(t *testing.T) {
 	t.Helper()
 
@@ -497,5 +504,54 @@ func TestSimplePoolStatusReportsTargetAndLowQuotaCount(t *testing.T) {
 	}
 	if status.LowQuotaCount != 2 {
 		t.Fatalf("expected low quota count 2, got %+v", status)
+	}
+}
+
+func TestSimplePoolAdminQuotaRowsPreserveBucketsAndDedupe(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("not used")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	})
+
+	ready := &Account{JWT: "jwt-ready", Quota: 18}
+	reuse := &Account{JWT: "jwt-reuse", Quota: 7}
+	borrowed := &Account{JWT: "jwt-borrowed", Quota: 4}
+	borrowedDuplicate := &Account{JWT: "shadow-account", Quota: 99}
+
+	pool.ready = []*Account{ready}
+	pool.reusable = []*Account{reuse}
+	pool.borrowed = map[*Account]string{
+		borrowed:          "jwt-borrowed",
+		borrowedDuplicate: "jwt-ready",
+	}
+
+	rows := pool.AdminQuotaRows()
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows, got %+v", rows)
+	}
+
+	seen := map[string]AdminQuotaRow{}
+	for _, row := range rows {
+		seen[row.JWT] = row
+	}
+	if seen["jwt-ready"].PoolBucket != "ready" {
+		t.Fatalf("expected ready bucket, got %+v", seen["jwt-ready"])
+	}
+	if seen["jwt-ready"].Quota != 18 {
+		t.Fatalf("expected dedupe to keep the first-seen ready row, got %+v", seen["jwt-ready"])
+	}
+	if seen["jwt-reuse"].PoolBucket != "reusable" {
+		t.Fatalf("expected reusable bucket, got %+v", seen["jwt-reuse"])
+	}
+	if seen["jwt-borrowed"].PoolBucket != "borrowed" {
+		t.Fatalf("expected borrowed bucket, got %+v", seen["jwt-borrowed"])
+	}
+
+	rows[0].JWT = "mutated"
+	if pool.ready[0].JWT != "jwt-ready" {
+		t.Fatalf("expected detached snapshot, got pool mutation %+v", pool.ready[0])
 	}
 }

@@ -29,6 +29,7 @@ type PoolManager interface {
 	Acquire(cost int) *Account
 	Release(acc *Account)
 	Status() PoolStatus
+	AdminQuotaRows() []AdminQuotaRow
 	StartFillTask(count int) FillTaskSnapshot
 	Prune() PruneSummary
 	ImportAccounts(accounts []*Account) ImportPoolResult

@@ -547,6 +547,52 @@ func (p *SimplePool) ExportAccounts() []ExportedAccount {
 	return exported
 }
 
+func (p *SimplePool) AdminQuotaRows() []AdminQuotaRow {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	totalCandidates := len(p.ready) + len(p.reusable) + len(p.borrowed)
+	rows := make([]AdminQuotaRow, 0, totalCandidates)
+	seen := make(map[string]struct{}, totalCandidates)
+	appendRow := func(jwt string, quota int, bucket string) {
+		jwt = strings.TrimSpace(jwt)
+		if jwt == "" {
+			return
+		}
+		if _, ok := seen[jwt]; ok {
+			return
+		}
+		seen[jwt] = struct{}{}
+		rows = append(rows, AdminQuotaRow{
+			JWT:        jwt,
+			Quota:      quota,
+			Status:     deriveAdminQuotaStatus(quota),
+			PoolBucket: bucket,
+		})
+	}
+
+	for _, acc := range p.ready {
+		if acc == nil {
+			continue
+		}
+		appendRow(acc.JWT, acc.Quota, "ready")
+	}
+	for _, acc := range p.reusable {
+		if acc == nil {
+			continue
+		}
+		appendRow(acc.JWT, acc.Quota, "reusable")
+	}
+	for acc, originalJWT := range p.borrowed {
+		if acc == nil {
+			continue
+		}
+		appendRow(originalJWT, acc.Quota, "borrowed")
+	}
+
+	return rows
+}
+
 func (p *SimplePool) Prune() PruneSummary {
 	p.mu.Lock()
 	pooled := make([]pooledAccount, 0, len(p.ready)+len(p.reusable))
