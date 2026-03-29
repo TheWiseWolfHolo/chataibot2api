@@ -3,96 +3,134 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Holo Image Admin</title>
+  <title>holo-image-api 后台</title>
   <link rel="stylesheet" href="/admin/assets/styles.css" />
 </head>
 <body class="admin-body">
-  <div class="page-shell">
-    <header class="topbar">
-      <div>
-        <p class="caption">HOLO IMAGE ADMIN</p>
-        <h1>服务状态</h1>
-        <p class="subtle" id="topline">正在检查当前会话与实例状态。</p>
-        <div class="topbar-meta">
+  <div class="admin-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">HI</div>
+        <div>
+          <p class="eyebrow">当前项目</p>
+          <h1>holo-image-api</h1>
+          <p class="sidebar-subtitle">管理后台</p>
+        </div>
+      </div>
+
+      <div class="sidebar-panel">
+        <div class="sidebar-row">
+          <span>主域名</span>
+          <strong>holo-image-api.zeabur.app</strong>
+        </div>
+        <div class="sidebar-row">
+          <span>刷新状态</span>
+          <span class="badge" id="refreshState">未刷新</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="后台导航">
+        <a class="nav-link" href="#overviewSection">总览</a>
+        <a class="nav-link" href="#poolSectionWrap">号池</a>
+        <a class="nav-link" href="#modelsSectionWrap">模型</a>
+        <a class="nav-link" href="#migrationSectionWrap">迁移</a>
+        <a class="nav-link" href="#actionsSectionWrap">操作</a>
+        <a class="nav-link" href="#dangerSectionWrap">危险操作</a>
+        <a class="nav-link" href="#logSectionWrap">日志</a>
+      </nav>
+
+      <div class="sidebar-actions">
+        <button type="button" class="button secondary wide" id="refreshBtn">刷新</button>
+        <button type="button" class="button ghost wide" id="logoutBtn">退出</button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="workspace-header">
+        <div>
+          <p class="eyebrow">运行态</p>
+          <h2>服务状态</h2>
+          <p class="subtle" id="topline">正在检查当前会话与实例状态。</p>
+        </div>
+        <div class="workspace-project">
           <span class="pill">当前项目</span>
           <strong>holo-image-api</strong>
         </div>
-      </div>
-      <div class="topbar-actions">
-        <span class="badge" id="refreshState">未刷新</span>
-        <button type="button" class="button secondary" id="refreshBtn">刷新</button>
-        <button type="button" class="button ghost" id="logoutBtn">退出</button>
-      </div>
-    </header>
+      </header>
 
-    <main class="layout">
-      <section class="surface">
+      <section class="surface summary-surface" id="overviewSection">
         <div class="section-head">
           <div>
-            <p class="caption">首屏</p>
-            <h2>当前实例</h2>
+            <p class="eyebrow">SUMMARY</p>
+            <h3>总览</h3>
           </div>
-          <p class="section-note">这里先看 live、号池、补号、最后错误和刷新时间。</p>
+          <p class="section-note">先看 live、主域名、补号状态、错误和刷新时间。</p>
         </div>
         <div class="metrics-grid" id="statusGrid"></div>
       </section>
 
-      <section class="surface">
+      <section class="surface pool-surface" id="poolSectionWrap">
         <div class="section-head">
           <div>
-            <p class="caption">POOL</p>
-            <h2>号池</h2>
+            <p class="eyebrow">POOL</p>
+            <h3>号池</h3>
           </div>
+          <p class="section-note">运行池、持久化、补号和清理状态都在这里。</p>
         </div>
         <div id="poolSection"></div>
       </section>
 
-      <section class="surface">
+      <section class="surface actions-surface" id="actionsSectionWrap">
         <div class="section-head">
           <div>
-            <p class="caption">MODELS</p>
-            <h2>模型支持</h2>
+            <p class="eyebrow">ACTIONS</p>
+            <h3>常用操作</h3>
           </div>
-        </div>
-        <div id="modelsSection"></div>
-      </section>
-
-      <section class="surface">
-        <div class="section-head">
-          <div>
-            <p class="caption">MIGRATION</p>
-            <h2>迁移结果</h2>
-          </div>
-        </div>
-        <div id="migrationSection"></div>
-      </section>
-
-      <section class="surface">
-        <div class="section-head">
-          <div>
-            <p class="caption">ACTIONS</p>
-            <h2>常用操作</h2>
-          </div>
+          <p class="section-note">高频操作放前面，不把页面做成展示页。</p>
         </div>
         <div id="actionsSection"></div>
       </section>
 
-      <section class="surface danger-surface">
+      <section class="surface models-surface" id="modelsSectionWrap">
         <div class="section-head">
           <div>
-            <p class="caption">DANGER</p>
-            <h2>危险操作</h2>
+            <p class="eyebrow">MODELS</p>
+            <h3>模型</h3>
           </div>
+          <p class="section-note">按文本 / 图片拆开，别再堆成一片小标签。</p>
+        </div>
+        <div id="modelsSection"></div>
+      </section>
+
+      <section class="surface migration-surface" id="migrationSectionWrap">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">MIGRATION</p>
+            <h3>迁移</h3>
+          </div>
+          <p class="section-note">只看来源、结果和错误。</p>
+        </div>
+        <div id="migrationSection"></div>
+      </section>
+
+      <section class="surface danger-surface" id="dangerSectionWrap">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">DANGER</p>
+            <h3>危险操作</h3>
+          </div>
+          <p class="section-note">和常用操作彻底分开。</p>
         </div>
         <div id="dangerSection"></div>
       </section>
 
-      <section class="surface">
+      <section class="surface logs-surface" id="logSectionWrap">
         <div class="section-head">
           <div>
-            <p class="caption">LOG</p>
-            <h2>日志</h2>
+            <p class="eyebrow">LOG</p>
+            <h3>日志</h3>
           </div>
+          <p class="section-note">保留最近的结果和错误，不写废话。</p>
         </div>
         <div id="logSection"></div>
       </section>

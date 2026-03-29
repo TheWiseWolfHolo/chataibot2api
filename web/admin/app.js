@@ -157,7 +157,7 @@ function renderStatus(snapshot) {
     metric('最后错误', currentLastError(snapshot), `最后刷新 ${refreshAt}`),
   ].join('');
 
-  topline.textContent = `${meta.instance_name || '未配置实例'} · ${meta.service_label || '未配置 service'} · ${meta.deploy_source || '未配置来源'} · ${primaryLabel}`;
+  topline.textContent = `实例 ${meta.instance_name || '未配置'} · service ${meta.service_label || '未配置'} · ${meta.deploy_source || '未配置来源'} · ${primaryLabel}`;
 
   const tone = state.bannerError ? 'danger' : pool.auto_fill_active ? 'warn' : 'good';
   setRefreshState(`最后刷新 ${refreshAt}`, tone);
@@ -193,47 +193,81 @@ function renderPool(snapshot) {
   `;
 }
 
+function capabilityPill(label, tone = '') {
+  return `<span class="pill${tone ? ` ${tone}` : ''}">${escapeHtml(label)}</span>`;
+}
+
+function modelTableRows(models, type) {
+  if (!models.length) {
+    return `<tr><td colspan="4" class="subtle">暂无${type === 'text' ? '文本' : '图片'}模型</td></tr>`;
+  }
+
+  return models.map((item) => {
+    const capabilities = [];
+    if (type === 'text') {
+      capabilities.push(item.internet ? capabilityPill('联网', 'good') : capabilityPill('标准'));
+    } else {
+      capabilities.push(item.supports_edit ? capabilityPill('图生图', 'good') : capabilityPill('仅生图'));
+      if (item.supports_merge) {
+        capabilities.push(capabilityPill('拼图', 'warn'));
+      }
+    }
+
+    return `
+      <tr>
+        <td class="model-name">${escapeHtml(item.id)}</td>
+        <td>${type === 'text' ? '文本' : '图片'}</td>
+        <td><div class="model-capabilities">${capabilities.join('')}</div></td>
+        <td>${escapeHtml(String(item.cost))}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
 function renderModels(snapshot) {
   const { catalog } = snapshot;
-  const textTags = catalog.text_models
-    .map((item) => {
-      const notes = [];
-      if (item.internet) {
-        notes.push('联网');
-      }
-      notes.push(`cost ${item.cost}`);
-      return modelTag(item.id, notes.join(' · '));
-    })
-    .join('');
-
-  const imageTags = catalog.image_models
-    .map((item) => {
-      const notes = [];
-      if (item.supports_edit) {
-        notes.push('图生图');
-      }
-      if (item.supports_merge) {
-        notes.push('拼图');
-      }
-      notes.push(`cost ${item.cost}`);
-      return modelTag(item.id, notes.join(' · '));
-    })
-    .join('');
 
   modelsSection.innerHTML = `
-    <div class="cluster">
-      <div class="cluster-head">
-        <h3>文本模型</h3>
-        <span class="pill">${formatCount(catalog.text_models.length)} 个</span>
-      </div>
-      <div class="tag-list">${textTags || '<span class="subtle">暂无文本模型</span>'}</div>
-    </div>
-    <div class="cluster">
-      <div class="cluster-head">
-        <h3>图片模型</h3>
-        <span class="pill">${formatCount(catalog.image_models.length)} 个</span>
-      </div>
-      <div class="tag-list">${imageTags || '<span class="subtle">暂无图片模型</span>'}</div>
+    <div class="models-stack">
+      <section class="model-group">
+        <div class="model-group-head">
+          <h4>文本模型</h4>
+          <span class="pill">${formatCount(catalog.text_models.length)} 个</span>
+        </div>
+        <div class="table-scroll">
+          <table class="model-table">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>类型</th>
+                <th>能力</th>
+                <th>Cost</th>
+              </tr>
+            </thead>
+            <tbody>${modelTableRows(catalog.text_models, 'text')}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="model-group">
+        <div class="model-group-head">
+          <h4>图片模型</h4>
+          <span class="pill">${formatCount(catalog.image_models.length)} 个</span>
+        </div>
+        <div class="table-scroll">
+          <table class="model-table">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>类型</th>
+                <th>能力</th>
+                <th>Cost</th>
+              </tr>
+            </thead>
+            <tbody>${modelTableRows(catalog.image_models, 'image')}</tbody>
+          </table>
+        </div>
+      </section>
     </div>
   `;
 }
@@ -263,7 +297,7 @@ function renderActions(snapshot) {
     <div class="action-grid">
       <section class="action-card">
         <h3>补号</h3>
-        <p>手动触发一次补号任务，不会改动阈值配置。</p>
+        <p>手动补号，不改阈值。</p>
         <div class="action-row">
           <label class="field" style="min-width: 180px;">
             <span>补号数量</span>
@@ -274,7 +308,7 @@ function renderActions(snapshot) {
       </section>
       <section class="action-card">
         <h3>清理坏号</h3>
-        <p>检查当前号池并清掉无额度或明显失效的账号。</p>
+        <p>检查当前号池并清掉失效账号。</p>
         <div class="action-row">
           <button type="button" class="button secondary" id="pruneBtn">执行清理</button>
           <button type="button" class="button secondary" id="migrateBtn">导入旧池</button>
@@ -292,7 +326,7 @@ function renderDanger() {
   dangerSection.innerHTML = `
     <div class="action-card">
       <h3>旧实例退役</h3>
-      <p>这个动作应当只在主域名切换、路由验证和号池迁移都完成后再触发。接口如果还没接通，会直接返回错误。</p>
+      <p>只在主域名切换、路由验证和号池迁移都完成后再点。</p>
       <div class="action-row">
         <button type="button" class="button danger" id="retireBtn">尝试退役旧实例</button>
       </div>
