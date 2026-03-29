@@ -850,6 +850,9 @@ func TestChatCompletionsStreamsTextChat(t *testing.T) {
 	if !strings.Contains(recorder.Header().Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("expected SSE content type, got headers=%v body=%s", recorder.Header(), recorder.Body.String())
 	}
+	if !strings.Contains(recorder.Body.String(), `"role":"assistant"`) {
+		t.Fatalf("expected assistant role prelude in stream body, got %s", recorder.Body.String())
+	}
 	if !strings.Contains(recorder.Body.String(), `"model":"gpt-4.1"`) {
 		t.Fatalf("expected stream model gpt-4.1, got %s", recorder.Body.String())
 	}
@@ -861,6 +864,48 @@ func TestChatCompletionsStreamsTextChat(t *testing.T) {
 	}
 	if backend.textCallCount != 0 {
 		t.Fatalf("expected no continuation call for complete stream, got %d", backend.textCallCount)
+	}
+}
+
+func TestChatCompletionsSplitsLargeSingleStreamChunk(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	backend.textStreamEvents = []TextStreamEvent{
+		{Type: "botType", ChatModel: "gpt-4.1-nano"},
+		{Type: "chunk", Delta: "1\n2\n3\n4\n5"},
+	}
+	backend.textStreamResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1-nano",
+		Content:   "1\n2\n3\n4\n5",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1-nano",
+		"stream":true,
+		"messages":[{"role":"user","content":"Count to five"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, body)
+	}
+	if !strings.Contains(body, `"role":"assistant"`) {
+		t.Fatalf("expected assistant role prelude in stream body, got %s", body)
+	}
+	if !strings.Contains(body, `"content":"1`) || !strings.Contains(body, `"content":"2`) || !strings.Contains(body, `"content":"5"`) {
+		t.Fatalf("expected split line-by-line deltas in stream body, got %s", body)
+	}
+	if strings.Count(body, `"object":"chat.completion.chunk"`) < 6 {
+		t.Fatalf("expected multiple chat completion chunks after splitting, got %s", body)
+	}
+	if !strings.Contains(body, "[DONE]") {
+		t.Fatalf("expected [DONE] in stream body, got %s", body)
 	}
 }
 
@@ -1410,6 +1455,9 @@ func TestAdminSessionLoginLogoutAndCookieAccess(t *testing.T) {
 	}
 	if !strings.Contains(adminPageRec.Body.String(), "服务状态") {
 		t.Fatalf("expected admin dashboard html, got %s", adminPageRec.Body.String())
+	}
+	if !strings.Contains(adminPageRec.Body.String(), "当前项目") {
+		t.Fatalf("expected project-focused admin dashboard html, got %s", adminPageRec.Body.String())
 	}
 
 	poolReq := httptest.NewRequest(http.MethodGet, "/v1/admin/pool", nil)

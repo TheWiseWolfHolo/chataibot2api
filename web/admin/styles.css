@@ -127,6 +127,19 @@ body {
   flex-wrap: wrap;
 }
 
+.topbar-meta {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.topbar-meta strong {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
 .badge,
 .pill {
   display: inline-flex;

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 )
 
 func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletionRequest) {
@@ -15,6 +16,12 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 			created: a.now().Unix(),
 		}
 		resp, err := a.StreamTextChat(req, func(event TextStreamEvent) error {
+			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
+				if strings.TrimSpace(event.ChatModel) != "" {
+					writer.model = event.ChatModel
+				}
+				return writer.WriteRole()
+			}
 			if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") {
 				return writer.WriteDelta(event.Delta)
 			}
@@ -172,6 +179,7 @@ type openAITextStreamWriter struct {
 	model        string
 	created      int64
 	started      bool
+	wroteRole    bool
 	wroteContent bool
 }
 
@@ -194,6 +202,42 @@ func (s *openAITextStreamWriter) WriteDelta(content string) error {
 	s.start()
 	s.wroteContent = true
 
+	for _, piece := range splitTextStreamDelta(content) {
+		if piece == "" {
+			continue
+		}
+		payload, err := json.Marshal(map[string]any{
+			"id":      fmt.Sprintf("chatcmpl-%d", s.created),
+			"object":  "chat.completion.chunk",
+			"created": s.created,
+			"model":   s.model,
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": piece,
+					},
+					"finish_reason": nil,
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(s.w, "data: %s\n\n", payload); err != nil {
+			return err
+		}
+		s.flush()
+	}
+	return nil
+}
+
+func (s *openAITextStreamWriter) WriteRole() error {
+	if s.wroteRole {
+		return nil
+	}
+	s.start()
+
 	payload, err := json.Marshal(map[string]any{
 		"id":      fmt.Sprintf("chatcmpl-%d", s.created),
 		"object":  "chat.completion.chunk",
@@ -203,7 +247,7 @@ func (s *openAITextStreamWriter) WriteDelta(content string) error {
 			{
 				"index": 0,
 				"delta": map[string]any{
-					"content": content,
+					"role": "assistant",
 				},
 				"finish_reason": nil,
 			},
@@ -215,6 +259,7 @@ func (s *openAITextStreamWriter) WriteDelta(content string) error {
 	if _, err := fmt.Fprintf(s.w, "data: %s\n\n", payload); err != nil {
 		return err
 	}
+	s.wroteRole = true
 	s.flush()
 	return nil
 }
@@ -252,5 +297,75 @@ func (s *openAITextStreamWriter) flush() {
 	flusher, ok := s.w.(http.Flusher)
 	if ok {
 		flusher.Flush()
+	}
+}
+
+func splitTextStreamDelta(content string) []string {
+	if content == "" {
+		return nil
+	}
+
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	if strings.Contains(normalized, "\n") {
+		lines := strings.SplitAfter(normalized, "\n")
+		chunks := make([]string, 0, len(lines))
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			chunks = append(chunks, splitLongStreamSegment(line)...)
+		}
+		return chunks
+	}
+
+	return splitLongStreamSegment(normalized)
+}
+
+func splitLongStreamSegment(segment string) []string {
+	if segment == "" {
+		return nil
+	}
+	if utf8.RuneCountInString(segment) <= 48 {
+		return []string{segment}
+	}
+
+	runes := []rune(segment)
+	const (
+		targetChunkSize = 36
+		maxChunkSize    = 48
+	)
+
+	chunks := make([]string, 0, (len(runes)/targetChunkSize)+1)
+	for start := 0; start < len(runes); {
+		end := start + targetChunkSize
+		if end >= len(runes) {
+			chunks = append(chunks, string(runes[start:]))
+			break
+		}
+
+		cut := end
+		limit := minInt(len(runes), start+maxChunkSize)
+		for i := limit - 1; i > start+12; i-- {
+			if isStreamSplitBoundary(runes[i]) {
+				cut = i + 1
+				break
+			}
+		}
+		if cut <= start {
+			cut = limit
+		}
+		chunks = append(chunks, string(runes[start:cut]))
+		start = cut
+	}
+
+	return chunks
+}
+
+func isStreamSplitBoundary(r rune) bool {
+	switch r {
+	case ' ', '\t', ',', '，', '.', '。', '!', '！', '?', '？', ';', '；', ':', '：', ')', '）', ']', '】', '}', '》':
+		return true
+	default:
+		return false
 	}
 }
