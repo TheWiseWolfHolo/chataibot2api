@@ -1632,10 +1632,10 @@ func TestAdminSessionLoginLogoutAndCookieAccess(t *testing.T) {
 	if adminPageRec.Code != http.StatusOK {
 		t.Fatalf("expected authenticated admin page, got %d body=%s", adminPageRec.Code, adminPageRec.Body.String())
 	}
-	if !strings.Contains(adminPageRec.Body.String(), "服务状态") {
+	if !strings.Contains(adminPageRec.Body.String(), "额度总览") {
 		t.Fatalf("expected admin dashboard html, got %s", adminPageRec.Body.String())
 	}
-	if !strings.Contains(adminPageRec.Body.String(), "当前项目") {
+	if !strings.Contains(adminPageRec.Body.String(), "号池明细") {
 		t.Fatalf("expected project-focused admin dashboard html, got %s", adminPageRec.Body.String())
 	}
 
