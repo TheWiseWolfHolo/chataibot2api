@@ -161,7 +161,12 @@ func (a *App) HandleAdminPoolImport(w http.ResponseWriter, r *http.Request) {
 
 		quota := 65
 		if validate {
-			quota = a.backend.GetCount(jwt)
+			refreshedQuota, err := a.backend.GetCount(jwt)
+			if err != nil {
+				rejected++
+				continue
+			}
+			quota = refreshedQuota
 			if quota < minimumQuota {
 				rejected++
 				continue

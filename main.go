@@ -20,7 +20,7 @@ type APIClient interface {
 	CreateChatContext(model, title, jwtToken string) (int, error)
 	SendTextMessage(req UpstreamTextMessageRequest, jwtToken string) (TextCompletionResult, error)
 	StreamTextMessage(req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error)
-	GetCount(jwtToken string) int
+	GetCount(jwtToken string) (int, error)
 	SendRegisterRequest(email string) error
 	VerifyAccount(email, code string) (string, error)
 }

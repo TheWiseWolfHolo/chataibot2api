@@ -302,7 +302,7 @@ func (c *APIClient) UpdateUserSettings(jwtToken, aspectRatio string) bool {
 }
 
 // GetCount 获取剩余请求
-func (c *APIClient) GetCount(jwtToken string) int {
+func (c *APIClient) GetCount(jwtToken string) (int, error) {
 	url := c.apiURL("/user/answers-count/v2")
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("Cookie", "token="+jwtToken)
@@ -311,21 +311,23 @@ func (c *APIClient) GetCount(jwtToken string) int {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		fmt.Println("[-] 获取剩余额度失败：", err)
-		return 0
+		return 0, fmt.Errorf("获取剩余额度失败：%w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("获取剩余额度失败(HTTP %d)：%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 
 	var respData struct {
 		LeftAnswersCount int `json:"leftAnswersCount"`
 	}
 	if err := json.Unmarshal(body, &respData); err != nil {
-		return 0
+		return 0, fmt.Errorf("解析剩余额度失败：%w", err)
 	}
 
-	return respData.LeftAnswersCount
+	return respData.LeftAnswersCount, nil
 }
 
 // GenerateImage 图片生成

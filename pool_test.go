@@ -57,8 +57,8 @@ func TestSimplePoolStartFillTaskCreatesAccountsAsynchronously(t *testing.T) {
 	pool := NewSimplePool(10, 0, func() (string, error) {
 		registerCalls++
 		return "jwt-fill-" + time.Now().Format("150405.000000"), nil
-	}, func(_ string) int {
-		return 65
+	}, func(_ string) (int, error) {
+		return 65, nil
 	})
 
 	task := pool.StartFillTask(2)
@@ -92,11 +92,11 @@ func TestSimplePoolPruneRemovesInvalidAccounts(t *testing.T) {
 
 	pool := NewSimplePool(10, 0, func() (string, error) {
 		return "", fmt.Errorf("no account")
-	}, func(jwt string) int {
+	}, func(jwt string) (int, error) {
 		if jwt == "dead" {
-			return 0
+			return 0, nil
 		}
-		return 50
+		return 50, nil
 	})
 	pool.ready = []*Account{
 		{JWT: "live", Quota: 65},
@@ -124,6 +124,36 @@ func TestSimplePoolPruneRemovesInvalidAccounts(t *testing.T) {
 	}
 }
 
+func TestSimplePoolPruneKeepsAccountsWhenQuotaRefreshFails(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(jwt string) (int, error) {
+		return 0, fmt.Errorf("upstream quota endpoint failed for %s", jwt)
+	})
+	pool.ready = []*Account{
+		{JWT: "keep-me", Quota: 65},
+	}
+
+	summary := pool.Prune()
+
+	if summary.Checked != 1 {
+		t.Fatalf("expected checked 1, got %+v", summary)
+	}
+	if summary.Removed != 0 {
+		t.Fatalf("expected removed 0 when quota refresh fails, got %+v", summary)
+	}
+	if summary.Remaining != 1 {
+		t.Fatalf("expected remaining 1, got %+v", summary)
+	}
+
+	status := pool.Status()
+	if status.TotalCount != 1 {
+		t.Fatalf("expected account to remain in pool, got %+v", status)
+	}
+}
+
 func TestSimplePoolAutoFillStopsAtTargetSize(t *testing.T) {
 	t.Helper()
 
@@ -131,8 +161,8 @@ func TestSimplePoolAutoFillStopsAtTargetSize(t *testing.T) {
 	pool := NewSimplePoolWithOptions(4, 1, func() (string, error) {
 		registerCalls++
 		return fmt.Sprintf("jwt-%d", registerCalls), nil
-	}, func(_ string) int {
-		return 65
+	}, func(_ string) (int, error) {
+		return 65, nil
 	}, PoolOptions{
 		LowWatermark: 2,
 	})
@@ -163,11 +193,11 @@ func TestSimplePoolReleaseDropsInvalidAccountAndTriggersAutoRefill(t *testing.T)
 	pool := NewSimplePoolWithOptions(3, 1, func() (string, error) {
 		registerCalls++
 		return fmt.Sprintf("jwt-%d", registerCalls), nil
-	}, func(jwt string) int {
+	}, func(jwt string) (int, error) {
 		if jwt == "dead" {
-			return 0
+			return 0, nil
 		}
-		return 65
+		return 65, nil
 	}, PoolOptions{
 		LowWatermark: 3,
 	})
@@ -206,8 +236,8 @@ func TestSimplePoolRegistrationLoopRespectsSuccessInterval(t *testing.T) {
 	_ = NewSimplePoolWithOptions(3, 1, func() (string, error) {
 		registerCalls++
 		return fmt.Sprintf("jwt-%d", registerCalls), nil
-	}, func(_ string) int {
-		return 65
+	}, func(_ string) (int, error) {
+		return 65, nil
 	}, PoolOptions{
 		RegistrationInterval: 250 * time.Millisecond,
 	})
@@ -235,8 +265,8 @@ func TestSimplePoolRegistrationLoopRespectsFailureBackoff(t *testing.T) {
 	_ = NewSimplePoolWithOptions(3, 1, func() (string, error) {
 		registerCalls++
 		return "", fmt.Errorf("temporary failure")
-	}, func(_ string) int {
-		return 65
+	}, func(_ string) (int, error) {
+		return 65, nil
 	}, PoolOptions{
 		FailureBackoff: 250 * time.Millisecond,
 	})
@@ -264,8 +294,8 @@ func TestSimplePoolRegistrationLoopUsesExponentialFailureBackoffAndTracksError(t
 	pool := NewSimplePoolWithOptions(3, 1, func() (string, error) {
 		registerCalls++
 		return "", fmt.Errorf("Access denied: registration blocked temporarily for this IP.")
-	}, func(_ string) int {
-		return 65
+	}, func(_ string) (int, error) {
+		return 65, nil
 	}, PoolOptions{
 		FailureBackoff:    40 * time.Millisecond,
 		MaxFailureBackoff: 160 * time.Millisecond,
@@ -325,8 +355,8 @@ func TestSimplePoolRestoresAccountsFromStoreBeforeAutoFill(t *testing.T) {
 	pool := NewSimplePoolWithOptions(2, 1, func() (string, error) {
 		registerCalls++
 		return fmt.Sprintf("jwt-new-%d", registerCalls), nil
-	}, func(_ string) int {
-		return 65
+	}, func(_ string) (int, error) {
+		return 65, nil
 	}, PoolOptions{
 		Store:                store,
 		RegistrationInterval: time.Hour,
@@ -354,11 +384,11 @@ func TestSimplePoolImportAndPrunePersistAccounts(t *testing.T) {
 	store := &memoryAccountStore{}
 	pool := NewSimplePoolWithOptions(10, 0, func() (string, error) {
 		return "", fmt.Errorf("no account")
-	}, func(jwt string) int {
+	}, func(jwt string) (int, error) {
 		if jwt == "dead" {
-			return 0
+			return 0, nil
 		}
-		return 65
+		return 65, nil
 	}, PoolOptions{
 		Store: store,
 	})
@@ -393,8 +423,8 @@ func TestSimplePoolReleaseInvalidAccountUpdatesPersistence(t *testing.T) {
 	}
 	pool := NewSimplePoolWithOptions(1, 0, func() (string, error) {
 		return "", fmt.Errorf("no account")
-	}, func(_ string) int {
-		return 0
+	}, func(_ string) (int, error) {
+		return 0, nil
 	}, PoolOptions{
 		Store: store,
 	})
@@ -419,8 +449,8 @@ func TestSimplePoolExportAccountsReturnsSnapshotAcrossReadyReusableAndBorrowed(t
 
 	pool := NewSimplePool(10, 0, func() (string, error) {
 		return "", fmt.Errorf("no account")
-	}, func(_ string) int {
-		return 65
+	}, func(_ string) (int, error) {
+		return 65, nil
 	})
 	pool.ready = []*Account{
 		{JWT: "jwt-ready", Quota: 65},
@@ -450,8 +480,8 @@ func TestSimplePoolStatusReportsTargetAndLowQuotaCount(t *testing.T) {
 
 	pool := NewSimplePool(10, 0, func() (string, error) {
 		return "", fmt.Errorf("no account")
-	}, func(_ string) int {
-		return 65
+	}, func(_ string) (int, error) {
+		return 65, nil
 	})
 	pool.ready = []*Account{
 		{JWT: "jwt-healthy", Quota: 65},

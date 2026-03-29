@@ -79,7 +79,7 @@ type SimplePool struct {
 	maxFailureBackoff    time.Duration
 	workerCount          int
 	registrar            func() (string, error)
-	quota                func(string) int
+	quota                func(string) (int, error)
 
 	mu       sync.Mutex
 	cond     *sync.Cond
@@ -118,11 +118,11 @@ type PoolOptions struct {
 
 const lowQuotaThreshold = 10
 
-func NewSimplePool(poolSize int, workerCount int, registrar func() (string, error), quota func(string) int) *SimplePool {
+func NewSimplePool(poolSize int, workerCount int, registrar func() (string, error), quota func(string) (int, error)) *SimplePool {
 	return NewSimplePoolWithOptions(poolSize, workerCount, registrar, quota, PoolOptions{})
 }
 
-func NewSimplePoolWithOptions(poolSize int, workerCount int, registrar func() (string, error), quota func(string) int, options PoolOptions) *SimplePool {
+func NewSimplePoolWithOptions(poolSize int, workerCount int, registrar func() (string, error), quota func(string) (int, error), options PoolOptions) *SimplePool {
 	if poolSize < 1 {
 		poolSize = 1
 	}
@@ -305,11 +305,14 @@ func (p *SimplePool) Release(acc *Account) {
 		return
 	}
 
-	quota := acc.Quota
 	if p.quota != nil {
-		quota = p.quota(acc.JWT)
+		quota, err := p.quota(acc.JWT)
+		if err != nil {
+			fmt.Printf("[-] 刷新账号额度失败，保留原额度：jwt=%s err=%v\n", strings.TrimSpace(acc.JWT), err)
+		} else {
+			acc.Quota = quota
+		}
 	}
-	acc.Quota = quota
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -565,9 +568,14 @@ func (p *SimplePool) Prune() PruneSummary {
 		summary.Checked++
 		quota := item.account.Quota
 		if p.quota != nil {
-			quota = p.quota(item.account.JWT)
+			refreshedQuota, err := p.quota(item.account.JWT)
+			if err != nil {
+				fmt.Printf("[-] prune 刷新额度失败，跳过删除：jwt=%s err=%v\n", strings.TrimSpace(item.account.JWT), err)
+			} else {
+				quota = refreshedQuota
+				item.account.Quota = quota
+			}
 		}
-		item.account.Quota = quota
 
 		if quota < 2 {
 			summary.Removed++

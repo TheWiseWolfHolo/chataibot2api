@@ -229,14 +229,14 @@ func (f *fakeBackend) StreamTextMessage(req UpstreamTextMessageRequest, jwtToken
 	return resp, nil
 }
 
-func (f *fakeBackend) GetCount(jwtToken string) int {
+func (f *fakeBackend) GetCount(jwtToken string) (int, error) {
 	f.getCountCalls = append(f.getCountCalls, jwtToken)
 	if f.quotaByJWT != nil {
 		if quota, ok := f.quotaByJWT[jwtToken]; ok {
-			return quota
+			return quota, nil
 		}
 	}
-	return 65
+	return 65, nil
 }
 
 func newTestHandler() (*fakePool, *fakeBackend, http.Handler) {
