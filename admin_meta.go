@@ -13,6 +13,9 @@ type ExportedAccount struct {
 
 type AdminMeta struct {
 	InstanceName         string     `json:"instance_name"`
+	ServiceLabel         string     `json:"service_label,omitempty"`
+	DeploySource         string     `json:"deploy_source,omitempty"`
+	ImageRef             string     `json:"image_ref,omitempty"`
 	PublicBaseURL        string     `json:"public_base_url"`
 	PrimaryPublicBaseURL string     `json:"primary_public_base_url"`
 	IsPrimaryTarget      bool       `json:"is_primary_target"`

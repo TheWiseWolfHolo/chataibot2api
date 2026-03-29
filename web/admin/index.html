@@ -6,53 +6,92 @@
   <title>Holo Image Admin</title>
   <link rel="stylesheet" href="/admin/assets/styles.css" />
 </head>
-<body>
-  <div class="aurora aurora-left"></div>
-  <div class="aurora aurora-right"></div>
-  <div class="grid-noise"></div>
-
-  <div id="app" class="shell">
-    <header class="hero">
-      <div class="hero-copy">
-        <p class="eyebrow">HOLO IMAGE // CONTROL CORE</p>
-        <h1>黑金控制台</h1>
-        <p class="hero-text">把号池健康、模型支持、迁移结果和危险操作压进同一张作战面板，首屏就能看懂。</p>
-        <div class="hero-metrics" id="heroMetrics"></div>
+<body class="admin-body">
+  <div class="page-shell">
+    <header class="topbar">
+      <div>
+        <p class="caption">HOLO IMAGE ADMIN</p>
+        <h1>服务状态</h1>
+        <p class="subtle" id="topline">正在检查当前会话与实例状态。</p>
       </div>
-
-      <aside class="command-panel">
-        <div class="command-head">
-          <div>
-            <p class="command-title">Admin Key</p>
-            <p class="command-subtitle">主域名：holo-image-api.zeabur.app</p>
-          </div>
-          <span class="connection-pill" id="commandStatus">未连接</span>
-        </div>
-
-        <label class="field-label" for="adminToken">鉴权</label>
-        <input id="adminToken" type="password" autocomplete="off" placeholder="输入 admin key" />
-
-        <div class="auth-actions">
-          <button id="saveTokenBtn" type="button">保存 key</button>
-          <button id="refreshBtn" type="button">刷新面板</button>
-        </div>
-
-        <div class="command-foot">
-          <span>自动补号阈值 500</span>
-          <span>目标池大小 1000</span>
-        </div>
-      </aside>
+      <div class="topbar-actions">
+        <span class="badge" id="refreshState">未刷新</span>
+        <button type="button" class="button secondary" id="refreshBtn">刷新</button>
+        <button type="button" class="button ghost" id="logoutBtn">退出</button>
+      </div>
     </header>
 
-    <main class="board">
-      <section class="panel panel-wide" id="overviewCard"></section>
-      <section class="panel" id="persistenceCard"></section>
-      <section class="panel" id="modelsCard"></section>
-      <section class="panel" id="migrationCard"></section>
-      <section class="panel" id="controlsCard"></section>
-      <section class="panel" id="domainCard"></section>
-      <section class="panel panel-danger" id="retireCard"></section>
-      <section class="panel panel-full" id="logCard"></section>
+    <main class="layout">
+      <section class="surface">
+        <div class="section-head">
+          <div>
+            <p class="caption">首屏</p>
+            <h2>当前实例</h2>
+          </div>
+          <p class="section-note">这里先看 live、号池、补号、最后错误和刷新时间。</p>
+        </div>
+        <div class="metrics-grid" id="statusGrid"></div>
+      </section>
+
+      <section class="surface">
+        <div class="section-head">
+          <div>
+            <p class="caption">POOL</p>
+            <h2>号池</h2>
+          </div>
+        </div>
+        <div id="poolSection"></div>
+      </section>
+
+      <section class="surface">
+        <div class="section-head">
+          <div>
+            <p class="caption">MODELS</p>
+            <h2>模型支持</h2>
+          </div>
+        </div>
+        <div id="modelsSection"></div>
+      </section>
+
+      <section class="surface">
+        <div class="section-head">
+          <div>
+            <p class="caption">MIGRATION</p>
+            <h2>迁移结果</h2>
+          </div>
+        </div>
+        <div id="migrationSection"></div>
+      </section>
+
+      <section class="surface">
+        <div class="section-head">
+          <div>
+            <p class="caption">ACTIONS</p>
+            <h2>常用操作</h2>
+          </div>
+        </div>
+        <div id="actionsSection"></div>
+      </section>
+
+      <section class="surface danger-surface">
+        <div class="section-head">
+          <div>
+            <p class="caption">DANGER</p>
+            <h2>危险操作</h2>
+          </div>
+        </div>
+        <div id="dangerSection"></div>
+      </section>
+
+      <section class="surface">
+        <div class="section-head">
+          <div>
+            <p class="caption">LOG</p>
+            <h2>日志</h2>
+          </div>
+        </div>
+        <div id="logSection"></div>
+      </section>
     </main>
   </div>
 

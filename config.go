@@ -24,6 +24,9 @@ type Config struct {
 	APIBearerToken           string
 	AdminToken               string
 	InstanceName             string
+	ServiceLabel             string
+	DeploySource             string
+	ImageRef                 string
 	PublicBaseURL            string
 	PrimaryPublicBaseURL     string
 	LegacyPoolExportBaseURL  string
@@ -48,6 +51,9 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	bearerTokenFlag := fs.String("bearer-token", "", "API 鉴权 Bearer Token")
 	adminTokenFlag := fs.String("admin-token", "", "管理 API 鉴权 Bearer Token")
 	instanceNameFlag := fs.String("instance-name", "", "实例标识")
+	serviceLabelFlag := fs.String("service-label", "", "部署平台中的服务标识")
+	deploySourceFlag := fs.String("deploy-source", "", "部署来源，如 zeabur-live / ghcr-preview")
+	imageRefFlag := fs.String("image-ref", "", "当前实例镜像标识")
 	publicBaseURLFlag := fs.String("public-base-url", "", "当前实例对外地址")
 	primaryPublicBaseURLFlag := fs.String("primary-public-base-url", "", "最终主域名")
 	legacyPoolExportBaseURLFlag := fs.String("legacy-pool-export-base-url", "", "旧实例池导出地址")
@@ -72,6 +78,9 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 		APIBearerToken:           strings.TrimSpace(*bearerTokenFlag),
 		AdminToken:               strings.TrimSpace(*adminTokenFlag),
 		InstanceName:             strings.TrimSpace(*instanceNameFlag),
+		ServiceLabel:             strings.TrimSpace(*serviceLabelFlag),
+		DeploySource:             strings.TrimSpace(*deploySourceFlag),
+		ImageRef:                 strings.TrimSpace(*imageRefFlag),
 		PublicBaseURL:            strings.TrimSpace(*publicBaseURLFlag),
 		PrimaryPublicBaseURL:     strings.TrimSpace(*primaryPublicBaseURLFlag),
 		LegacyPoolExportBaseURL:  strings.TrimSpace(*legacyPoolExportBaseURLFlag),
@@ -155,6 +164,15 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	}
 	if value := strings.TrimSpace(getenv("INSTANCE_NAME")); value != "" {
 		cfg.InstanceName = value
+	}
+	if value := strings.TrimSpace(getenv("SERVICE_LABEL")); value != "" {
+		cfg.ServiceLabel = value
+	}
+	if value := strings.TrimSpace(getenv("DEPLOY_SOURCE")); value != "" {
+		cfg.DeploySource = value
+	}
+	if value := strings.TrimSpace(getenv("IMAGE_REF")); value != "" {
+		cfg.ImageRef = value
 	}
 	if value := strings.TrimSpace(getenv("PUBLIC_BASE_URL")); value != "" {
 		cfg.PublicBaseURL = value

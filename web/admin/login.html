@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>后台登录 - Holo Image Admin</title>
+  <link rel="stylesheet" href="/admin/assets/styles.css" />
+</head>
+<body class="login-body">
+  <main class="login-shell">
+    <section class="login-panel">
+      <p class="caption">HOLO IMAGE ADMIN</p>
+      <h1>后台登录</h1>
+      <p class="subtle login-copy">输入当前实例的 admin key，验证成功后进入管理页。</p>
+
+      <dl class="login-meta">
+        <div>
+          <dt>主域名</dt>
+          <dd>holo-image-api.zeabur.app</dd>
+        </div>
+        <div>
+          <dt>会话时长</dt>
+          <dd>3 天</dd>
+        </div>
+      </dl>
+
+      <form id="loginForm" class="login-form">
+        <label class="field">
+          <span>Admin Key</span>
+          <input id="adminKey" type="password" autocomplete="current-password" placeholder="输入 admin key" />
+        </label>
+
+        <p id="loginError" class="inline-error" hidden></p>
+
+        <button type="submit" class="button primary wide">登录</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="/admin/assets/login.js"></script>
+</body>
+</html>

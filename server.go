@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func NewServerHandler(cfg Config, app *App) http.Handler {
@@ -12,24 +13,34 @@ func NewServerHandler(cfg Config, app *App) http.Handler {
 	if err != nil {
 		panic(err)
 	}
+	now := time.Now
+	if app != nil && app.now != nil {
+		now = app.now
+	}
+	adminSessions := NewAdminSessionManager(adminSessionTTL, now)
+	adminAuth := NewAdminAuthenticator(cfg.AdminToken, adminSessions)
 
 	mux.HandleFunc("/healthz", HealthzHandler)
-	mux.HandleFunc("/admin", HandleAdminIndex)
-	mux.HandleFunc("/admin/", HandleAdminIndex)
+	mux.HandleFunc("/admin/login", HandleAdminLoginPage)
+	mux.Handle("/admin", adminAuth.RequireDashboard(http.HandlerFunc(HandleAdminDashboardPage)))
+	mux.Handle("/admin/", adminAuth.RequireDashboard(http.HandlerFunc(HandleAdminDashboardPage)))
 	mux.Handle("/admin/assets/", http.StripPrefix("/admin/assets/", adminAssets))
 	mux.Handle("/v1/images/generations", BearerAuthMiddleware(cfg.APIBearerToken)(http.HandlerFunc(app.HandleImagesGenerations)))
 	mux.Handle("/v1/models", BearerAuthMiddleware(cfg.APIBearerToken)(http.HandlerFunc(app.HandleModels)))
 	mux.Handle("/v1/chat/completions", BearerAuthMiddleware(cfg.APIBearerToken)(http.HandlerFunc(app.HandleChatCompletions)))
-	mux.Handle("/v1/admin/pool", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolStatus)))
-	mux.Handle("/v1/admin/pool/fill", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolFill)))
-	mux.Handle("/v1/admin/pool/import", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolImport)))
-	mux.Handle("/v1/admin/pool/prune", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolPrune)))
-	mux.Handle("/v1/admin/pool/export", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolExport)))
-	mux.Handle("/v1/admin/meta", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminMeta)))
-	mux.Handle("/v1/admin/catalog", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminCatalog)))
-	mux.Handle("/v1/admin/migration/status", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminMigrationStatus)))
-	mux.Handle("/v1/admin/migrate-from-old", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminMigrateFromOld)))
-	mux.Handle("/v1/admin/retire-old", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminRetireOld)))
+	mux.HandleFunc("/v1/admin/session/login", adminAuth.HandleSessionLogin)
+	mux.HandleFunc("/v1/admin/session/me", adminAuth.HandleSessionMe)
+	mux.HandleFunc("/v1/admin/session/logout", adminAuth.HandleSessionLogout)
+	mux.Handle("/v1/admin/pool", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolStatus)))
+	mux.Handle("/v1/admin/pool/fill", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolFill)))
+	mux.Handle("/v1/admin/pool/import", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolImport)))
+	mux.Handle("/v1/admin/pool/prune", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolPrune)))
+	mux.Handle("/v1/admin/pool/export", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolExport)))
+	mux.Handle("/v1/admin/meta", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminMeta)))
+	mux.Handle("/v1/admin/catalog", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminCatalog)))
+	mux.Handle("/v1/admin/migration/status", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminMigrationStatus)))
+	mux.Handle("/v1/admin/migrate-from-old", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminMigrateFromOld)))
+	mux.Handle("/v1/admin/retire-old", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminRetireOld)))
 	return mux
 }
 

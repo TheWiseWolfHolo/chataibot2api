@@ -80,6 +80,9 @@ func (a *App) AdminMeta() AdminMeta {
 
 	return AdminMeta{
 		InstanceName:         strings.TrimSpace(a.cfg.InstanceName),
+		ServiceLabel:         strings.TrimSpace(a.cfg.ServiceLabel),
+		DeploySource:         strings.TrimSpace(a.cfg.DeploySource),
+		ImageRef:             strings.TrimSpace(a.cfg.ImageRef),
 		PublicBaseURL:        strings.TrimSpace(a.cfg.PublicBaseURL),
 		PrimaryPublicBaseURL: strings.TrimSpace(a.cfg.PrimaryPublicBaseURL),
 		IsPrimaryTarget:      isPrimaryTarget(a.cfg.PublicBaseURL, a.cfg.PrimaryPublicBaseURL),

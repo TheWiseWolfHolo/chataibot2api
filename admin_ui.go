@@ -17,7 +17,7 @@ func NewAdminUIHandler() (http.Handler, error) {
 	return http.FileServer(http.FS(sub)), nil
 }
 
-func HandleAdminIndex(w http.ResponseWriter, r *http.Request) {
+func HandleAdminDashboardPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -27,7 +27,24 @@ func HandleAdminIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, err := adminAssets.ReadFile("web/admin/index.html")
+	serveAdminHTML(w, "web/admin/index.html")
+}
+
+func HandleAdminLoginPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/admin/login" {
+		http.NotFound(w, r)
+		return
+	}
+
+	serveAdminHTML(w, "web/admin/login.html")
+}
+
+func serveAdminHTML(w http.ResponseWriter, assetPath string) {
+	payload, err := adminAssets.ReadFile(assetPath)
 	if err != nil {
 		http.Error(w, "admin ui unavailable", http.StatusInternalServerError)
 		return

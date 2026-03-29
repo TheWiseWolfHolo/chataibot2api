@@ -250,6 +250,9 @@ func newTestHandlerWithLegacyBaseURL(legacyBaseURL string) (*fakePool, *fakeBack
 		APIBearerToken:          "api-token",
 		AdminToken:              "admin-token",
 		InstanceName:            "test-instance",
+		ServiceLabel:            "holo-image-api-eners",
+		DeploySource:            "ghcr-preview",
+		ImageRef:                "ghcr.io/thewisewolfholo/chataibot2api:main",
 		PublicBaseURL:           "https://holo-image-api-eners.zeabur.app",
 		PrimaryPublicBaseURL:    "https://holo-image-api.zeabur.app",
 		LegacyPoolExportBaseURL: legacyBaseURL,
@@ -317,6 +320,9 @@ func TestLoadConfigReadsAdminMigrationFieldsFromEnv(t *testing.T) {
 			"API_BEARER_TOKEN":            "api-token",
 			"ADMIN_TOKEN":                 "admin-token",
 			"INSTANCE_NAME":               "holo-image-api-eners",
+			"SERVICE_LABEL":               "holo-image-api-eners",
+			"DEPLOY_SOURCE":               "ghcr-preview",
+			"IMAGE_REF":                   "ghcr.io/thewisewolfholo/chataibot2api:main",
 			"PUBLIC_BASE_URL":             "https://holo-image-api-eners.zeabur.app",
 			"PRIMARY_PUBLIC_BASE_URL":     "https://holo-image-api.zeabur.app",
 			"LEGACY_POOL_EXPORT_BASE_URL": "https://holo-image-api.zeabur.app",
@@ -337,6 +343,15 @@ func TestLoadConfigReadsAdminMigrationFieldsFromEnv(t *testing.T) {
 	}
 	if cfg.LegacyPoolExportBaseURL != "https://holo-image-api.zeabur.app" {
 		t.Fatalf("expected legacy export URL, got %+v", cfg)
+	}
+	if cfg.ServiceLabel != "holo-image-api-eners" {
+		t.Fatalf("expected service label, got %+v", cfg)
+	}
+	if cfg.DeploySource != "ghcr-preview" {
+		t.Fatalf("expected deploy source, got %+v", cfg)
+	}
+	if cfg.ImageRef != "ghcr.io/thewisewolfholo/chataibot2api:main" {
+		t.Fatalf("expected image ref, got %+v", cfg)
 	}
 }
 
@@ -1237,6 +1252,15 @@ func TestAdminMetaEndpointReturnsInstanceInformation(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"primary_public_base_url":"https://holo-image-api.zeabur.app"`) {
 		t.Fatalf("expected primary public base url in response, got %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"service_label":"holo-image-api-eners"`) {
+		t.Fatalf("expected service label in response, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"deploy_source":"ghcr-preview"`) {
+		t.Fatalf("expected deploy source in response, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"image_ref":"ghcr.io/thewisewolfholo/chataibot2api:main"`) {
+		t.Fatalf("expected image ref in response, got %s", rec.Body.String())
+	}
 }
 
 func TestAdminMigrationStatusEndpointReturnsCurrentState(t *testing.T) {
@@ -1279,29 +1303,144 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	}
 }
 
-func TestAdminUIRoutesServeHTMLAndAssets(t *testing.T) {
+func TestAdminUIRoutesServeLoginPageAndAssets(t *testing.T) {
 	t.Helper()
 
 	_, _, handler := newTestHandler()
 
-	pageReq := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	pageReq := httptest.NewRequest(http.MethodGet, "/admin/login", nil)
 	pageRec := httptest.NewRecorder()
 	handler.ServeHTTP(pageRec, pageReq)
 	if pageRec.Code != http.StatusOK {
-		t.Fatalf("expected admin page 200, got %d body=%s", pageRec.Code, pageRec.Body.String())
+		t.Fatalf("expected login page 200, got %d body=%s", pageRec.Code, pageRec.Body.String())
 	}
-	if !strings.Contains(pageRec.Body.String(), "Holo Image Admin") {
-		t.Fatalf("expected admin shell html, got %s", pageRec.Body.String())
+	if !strings.Contains(pageRec.Body.String(), "后台登录") {
+		t.Fatalf("expected login html, got %s", pageRec.Body.String())
 	}
 
-	assetReq := httptest.NewRequest(http.MethodGet, "/admin/assets/app.js", nil)
+	assetReq := httptest.NewRequest(http.MethodGet, "/admin/assets/login.js", nil)
 	assetRec := httptest.NewRecorder()
 	handler.ServeHTTP(assetRec, assetReq)
 	if assetRec.Code != http.StatusOK {
 		t.Fatalf("expected admin asset 200, got %d body=%s", assetRec.Code, assetRec.Body.String())
 	}
-	if !strings.Contains(assetRec.Body.String(), "refreshAll") {
+	if !strings.Contains(assetRec.Body.String(), "session/login") {
 		t.Fatalf("expected admin asset content, got %s", assetRec.Body.String())
+	}
+}
+
+func TestAdminRequiresSessionAndRedirectsWhenMissing(t *testing.T) {
+	t.Helper()
+
+	_, _, handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected redirect to login, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if location := rec.Header().Get("Location"); location != "/admin/login" {
+		t.Fatalf("expected redirect location /admin/login, got %q", location)
+	}
+}
+
+func TestAdminSessionLoginLogoutAndCookieAccess(t *testing.T) {
+	t.Helper()
+
+	pool, _, handler := newTestHandler()
+	pool.status = PoolStatus{TotalCount: 9}
+
+	badLoginReq := httptest.NewRequest(http.MethodPost, "/v1/admin/session/login", strings.NewReader(`{"admin_key":"wrong"}`))
+	badLoginReq.Header.Set("Content-Type", "application/json")
+	badLoginRec := httptest.NewRecorder()
+	handler.ServeHTTP(badLoginRec, badLoginReq)
+	if badLoginRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized login, got %d body=%s", badLoginRec.Code, badLoginRec.Body.String())
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/v1/admin/session/login", strings.NewReader(`{"admin_key":"admin-token"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("X-Forwarded-Proto", "https")
+	loginRec := httptest.NewRecorder()
+	handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("expected successful login, got %d body=%s", loginRec.Code, loginRec.Body.String())
+	}
+	if !strings.Contains(loginRec.Body.String(), `"expires_in":259200`) {
+		t.Fatalf("expected session ttl in response, got %s", loginRec.Body.String())
+	}
+
+	cookies := loginRec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected exactly one cookie, got %d", len(cookies))
+	}
+	sessionCookie := cookies[0]
+	if sessionCookie.Name != "holo_admin_session" {
+		t.Fatalf("unexpected session cookie %+v", sessionCookie)
+	}
+	if !sessionCookie.HttpOnly {
+		t.Fatalf("expected HttpOnly session cookie, got %+v", sessionCookie)
+	}
+	if !sessionCookie.Secure {
+		t.Fatalf("expected Secure cookie when forwarded proto is https, got %+v", sessionCookie)
+	}
+	if sessionCookie.MaxAge != 259200 {
+		t.Fatalf("expected 3-day ttl, got %+v", sessionCookie)
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/v1/admin/session/me", nil)
+	meReq.AddCookie(sessionCookie)
+	meRec := httptest.NewRecorder()
+	handler.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("expected session me success, got %d body=%s", meRec.Code, meRec.Body.String())
+	}
+	if !strings.Contains(meRec.Body.String(), `"authenticated":true`) {
+		t.Fatalf("expected authenticated session payload, got %s", meRec.Body.String())
+	}
+
+	adminPageReq := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	adminPageReq.AddCookie(sessionCookie)
+	adminPageRec := httptest.NewRecorder()
+	handler.ServeHTTP(adminPageRec, adminPageReq)
+	if adminPageRec.Code != http.StatusOK {
+		t.Fatalf("expected authenticated admin page, got %d body=%s", adminPageRec.Code, adminPageRec.Body.String())
+	}
+	if !strings.Contains(adminPageRec.Body.String(), "服务状态") {
+		t.Fatalf("expected admin dashboard html, got %s", adminPageRec.Body.String())
+	}
+
+	poolReq := httptest.NewRequest(http.MethodGet, "/v1/admin/pool", nil)
+	poolReq.AddCookie(sessionCookie)
+	poolRec := httptest.NewRecorder()
+	handler.ServeHTTP(poolRec, poolReq)
+	if poolRec.Code != http.StatusOK {
+		t.Fatalf("expected cookie-authenticated admin api access, got %d body=%s", poolRec.Code, poolRec.Body.String())
+	}
+	if !strings.Contains(poolRec.Body.String(), `"total_count":9`) {
+		t.Fatalf("expected pool data after cookie auth, got %s", poolRec.Body.String())
+	}
+
+	logoutReq := httptest.NewRequest(http.MethodPost, "/v1/admin/session/logout", nil)
+	logoutReq.AddCookie(sessionCookie)
+	logoutRec := httptest.NewRecorder()
+	handler.ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("expected logout success, got %d body=%s", logoutRec.Code, logoutRec.Body.String())
+	}
+	logoutCookies := logoutRec.Result().Cookies()
+	if len(logoutCookies) != 1 || logoutCookies[0].MaxAge >= 0 {
+		t.Fatalf("expected cookie clearing response, got %+v", logoutCookies)
+	}
+
+	meAfterLogoutReq := httptest.NewRequest(http.MethodGet, "/v1/admin/session/me", nil)
+	meAfterLogoutReq.AddCookie(sessionCookie)
+	meAfterLogoutRec := httptest.NewRecorder()
+	handler.ServeHTTP(meAfterLogoutRec, meAfterLogoutReq)
+	if meAfterLogoutRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized after logout, got %d body=%s", meAfterLogoutRec.Code, meAfterLogoutRec.Body.String())
 	}
 }
 
