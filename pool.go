@@ -103,6 +103,7 @@ type SimplePool struct {
 	lastPersistError      string
 	lastPersistAt         time.Time
 	lastRestoreAt         time.Time
+	pruneShadow           []pooledAccount
 
 	tasks map[string]*registrationTask
 }
@@ -365,10 +366,12 @@ func (p *SimplePool) Status() PoolStatus {
 		nextRetryAt = &ts
 	}
 
+	visibleReady, visibleReusable := p.visiblePooledCountsLocked()
+
 	return PoolStatus{
-		ReadyCount:            len(p.ready),
-		ReusableCount:         len(p.reusable),
-		TotalCount:            len(p.ready) + len(p.reusable),
+		ReadyCount:            visibleReady,
+		ReusableCount:         visibleReusable,
+		TotalCount:            visibleReady + visibleReusable,
 		TargetCount:           p.maxSize,
 		BorrowedCount:         len(p.borrowed),
 		LowQuotaCount:         p.lowQuotaCountLocked(),
@@ -402,13 +405,8 @@ func (p *SimplePool) lowQuotaCountLocked() int {
 	}
 
 	count := 0
-	for _, acc := range p.ready {
-		if acc != nil && acc.Quota >= 2 && acc.Quota < lowQuotaThreshold {
-			count++
-		}
-	}
-	for _, acc := range p.reusable {
-		if acc != nil && acc.Quota >= 2 && acc.Quota < lowQuotaThreshold {
+	for _, item := range p.visiblePooledAccountsLocked() {
+		if item.account != nil && item.account.Quota >= 2 && item.account.Quota < lowQuotaThreshold {
 			count++
 		}
 	}
@@ -551,7 +549,8 @@ func (p *SimplePool) AdminQuotaRows() []AdminQuotaRow {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	totalCandidates := len(p.ready) + len(p.reusable) + len(p.borrowed)
+	visiblePooled := p.visiblePooledAccountsLocked()
+	totalCandidates := len(visiblePooled) + len(p.borrowed)
 	rows := make([]AdminQuotaRow, 0, totalCandidates)
 	seen := make(map[string]struct{}, totalCandidates)
 	appendRow := func(jwt string, quota int, bucket string) {
@@ -571,17 +570,15 @@ func (p *SimplePool) AdminQuotaRows() []AdminQuotaRow {
 		})
 	}
 
-	for _, acc := range p.ready {
-		if acc == nil {
+	for _, item := range visiblePooled {
+		if item.account == nil {
 			continue
 		}
-		appendRow(acc.JWT, acc.Quota, "ready")
-	}
-	for _, acc := range p.reusable {
-		if acc == nil {
-			continue
+		bucket := "ready"
+		if item.isReusable {
+			bucket = "reusable"
 		}
-		appendRow(acc.JWT, acc.Quota, "reusable")
+		appendRow(item.account.JWT, item.account.Quota, bucket)
 	}
 	for acc, originalJWT := range p.borrowed {
 		if acc == nil {
@@ -602,6 +599,7 @@ func (p *SimplePool) Prune() PruneSummary {
 	for _, acc := range p.reusable {
 		pooled = append(pooled, pooledAccount{account: acc, isReusable: true})
 	}
+	p.pruneShadow = clonePooledAccounts(pooled)
 	p.ready = nil
 	p.reusable = nil
 	p.mu.Unlock()
@@ -638,6 +636,7 @@ func (p *SimplePool) Prune() PruneSummary {
 	p.mu.Lock()
 	p.ready = append(p.ready, keptReady...)
 	p.reusable = append(p.reusable, keptReusable...)
+	p.pruneShadow = nil
 	p.pruneChecks += summary.Checked
 	p.pruneRemoved += summary.Removed
 	p.persistLocked()
@@ -695,7 +694,8 @@ func (p *SimplePool) reconcileAutoFillLocked() {
 }
 
 func (p *SimplePool) healthyCountLocked() int {
-	return len(p.ready) + len(p.reusable) + len(p.borrowed)
+	visibleReady, visibleReusable := p.visiblePooledCountsLocked()
+	return visibleReady + visibleReusable + len(p.borrowed)
 }
 
 func (p *SimplePool) registrationSuccessDelay() time.Duration {
@@ -832,7 +832,8 @@ func (p *SimplePool) snapshotAccountsLocked() []*Account {
 		return nil
 	}
 
-	result := make([]*Account, 0, len(p.ready)+len(p.reusable)+len(p.borrowed))
+	visiblePooled := p.visiblePooledAccountsLocked()
+	result := make([]*Account, 0, len(visiblePooled)+len(p.borrowed))
 	seen := make(map[string]struct{}, len(result))
 	appendAccount := func(jwt string, quota int) {
 		jwt = strings.TrimSpace(jwt)
@@ -849,17 +850,11 @@ func (p *SimplePool) snapshotAccountsLocked() []*Account {
 		})
 	}
 
-	for _, acc := range p.ready {
-		if acc == nil {
+	for _, item := range visiblePooled {
+		if item.account == nil {
 			continue
 		}
-		appendAccount(acc.JWT, acc.Quota)
-	}
-	for _, acc := range p.reusable {
-		if acc == nil {
-			continue
-		}
-		appendAccount(acc.JWT, acc.Quota)
+		appendAccount(item.account.JWT, item.account.Quota)
 	}
 	for acc, originalJWT := range p.borrowed {
 		if acc == nil {
@@ -869,6 +864,63 @@ func (p *SimplePool) snapshotAccountsLocked() []*Account {
 	}
 
 	return result
+}
+
+func (p *SimplePool) visiblePooledAccountsLocked() []pooledAccount {
+	if p == nil {
+		return nil
+	}
+
+	visible := make([]pooledAccount, 0, len(p.ready)+len(p.reusable)+len(p.pruneShadow))
+	visible = append(visible, clonePooledAccounts(p.pruneShadow)...)
+	for _, acc := range p.ready {
+		if acc == nil {
+			continue
+		}
+		visible = append(visible, pooledAccount{account: acc})
+	}
+	for _, acc := range p.reusable {
+		if acc == nil {
+			continue
+		}
+		visible = append(visible, pooledAccount{account: acc, isReusable: true})
+	}
+	return visible
+}
+
+func (p *SimplePool) visiblePooledCountsLocked() (int, int) {
+	readyCount := 0
+	reusableCount := 0
+	for _, item := range p.visiblePooledAccountsLocked() {
+		if item.account == nil {
+			continue
+		}
+		if item.isReusable {
+			reusableCount++
+		} else {
+			readyCount++
+		}
+	}
+	return readyCount, reusableCount
+}
+
+func clonePooledAccounts(accounts []pooledAccount) []pooledAccount {
+	if len(accounts) == 0 {
+		return nil
+	}
+
+	cloned := make([]pooledAccount, 0, len(accounts))
+	for _, item := range accounts {
+		if item.account == nil {
+			continue
+		}
+		copyValue := *item.account
+		cloned = append(cloned, pooledAccount{
+			account:    &copyValue,
+			isReusable: item.isReusable,
+		})
+	}
+	return cloned
 }
 
 func (p *SimplePool) persistencePath() string {

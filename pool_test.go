@@ -161,6 +161,72 @@ func TestSimplePoolPruneKeepsAccountsWhenQuotaRefreshFails(t *testing.T) {
 	}
 }
 
+func TestSimplePoolPruneKeepsReadVisibilityWhileQuotaRefreshInFlight(t *testing.T) {
+	t.Helper()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	signalOnce := make(chan struct{}, 1)
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(jwt string) (int, error) {
+		select {
+		case signalOnce <- struct{}{}:
+			close(entered)
+		default:
+		}
+		<-release
+		if jwt == "keep-low" {
+			return 4, nil
+		}
+		return 50, nil
+	})
+	pool.ready = []*Account{
+		{JWT: "keep-healthy", Quota: 65},
+	}
+	pool.reusable = []*Account{
+		{JWT: "keep-low", Quota: 7},
+	}
+
+	done := make(chan PruneSummary, 1)
+	go func() {
+		done <- pool.Prune()
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected prune quota refresh to start")
+	}
+
+	status := pool.Status()
+	if status.TotalCount != 2 {
+		t.Fatalf("expected status total count to stay visible during prune, got %+v", status)
+	}
+
+	rows := pool.AdminQuotaRows()
+	if len(rows) != 2 {
+		t.Fatalf("expected admin rows to stay visible during prune, got %+v", rows)
+	}
+
+	exported := pool.ExportAccounts()
+	if len(exported) != 2 {
+		t.Fatalf("expected export accounts to stay visible during prune, got %+v", exported)
+	}
+
+	close(release)
+
+	select {
+	case summary := <-done:
+		if summary.Remaining != 2 {
+			t.Fatalf("expected prune to keep both accounts, got %+v", summary)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected prune to finish after releasing quota refresh")
+	}
+}
+
 func TestSimplePoolAutoFillStopsAtTargetSize(t *testing.T) {
 	t.Helper()
 
