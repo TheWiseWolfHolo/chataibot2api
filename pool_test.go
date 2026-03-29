@@ -227,6 +227,141 @@ func TestSimplePoolPruneKeepsReadVisibilityWhileQuotaRefreshInFlight(t *testing.
 	}
 }
 
+func TestSimplePoolRestoreAccountsReplacesExistingPoolExactly(t *testing.T) {
+	t.Helper()
+
+	store := &memoryAccountStore{}
+	pool := NewSimplePoolWithOptions(5, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	}, PoolOptions{
+		Store: store,
+	})
+	pool.ready = []*Account{
+		{JWT: "old-ready", Quota: 65},
+	}
+	pool.reusable = []*Account{
+		{JWT: "old-reusable", Quota: 8},
+	}
+
+	result, err := pool.RestoreAccounts([]*Account{
+		{JWT: "new-a", Quota: 65},
+		{JWT: "new-b", Quota: 9},
+		{JWT: "new-a", Quota: 12},
+		{JWT: "", Quota: 65},
+	})
+	if err != nil {
+		t.Fatalf("expected restore to succeed, got %v", err)
+	}
+	if result.Restored != 2 || result.Duplicates != 1 || result.Rejected != 1 || result.TotalCount != 2 {
+		t.Fatalf("unexpected restore result %+v", result)
+	}
+
+	status := pool.Status()
+	if status.TotalCount != 2 || status.ReadyCount != 2 || status.ReusableCount != 0 {
+		t.Fatalf("expected exact replacement after restore, got %+v", status)
+	}
+
+	exported := pool.ExportAccounts()
+	if len(exported) != 2 {
+		t.Fatalf("expected exactly 2 exported accounts, got %+v", exported)
+	}
+
+	jwts := map[string]int{}
+	for _, item := range exported {
+		jwts[item.JWT] = item.Quota
+	}
+	if jwts["new-a"] != 65 || jwts["new-b"] != 9 {
+		t.Fatalf("unexpected restored export set %+v", exported)
+	}
+	if store.saves == 0 {
+		t.Fatalf("expected restore to persist snapshot")
+	}
+}
+
+func TestSimplePoolImportAccountsDoesNotClampToTargetCount(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePoolWithOptions(2, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	}, PoolOptions{
+		LowWatermark: 1,
+	})
+
+	result := pool.ImportAccounts([]*Account{
+		{JWT: "import-a", Quota: 65},
+		{JWT: "import-b", Quota: 11},
+		{JWT: "import-c", Quota: 9},
+	})
+
+	if result.Imported != 3 || result.Overflow != 0 || result.TotalCount != 3 {
+		t.Fatalf("expected import beyond target count without overflow, got %+v", result)
+	}
+
+	status := pool.Status()
+	if status.TargetCount != 2 || status.TotalCount != 3 {
+		t.Fatalf("expected target count preserved and total count exceed it, got %+v", status)
+	}
+}
+
+func TestSimplePoolRestoreAccountsDoesNotClampToTargetCount(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePoolWithOptions(2, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	}, PoolOptions{
+		LowWatermark: 1,
+	})
+
+	result, err := pool.RestoreAccounts([]*Account{
+		{JWT: "restore-a", Quota: 65},
+		{JWT: "restore-b", Quota: 8},
+		{JWT: "restore-c", Quota: 7},
+	})
+	if err != nil {
+		t.Fatalf("expected restore to succeed, got %v", err)
+	}
+	if result.Restored != 3 || result.Overflow != 0 || result.TotalCount != 3 {
+		t.Fatalf("expected restore beyond target count without overflow, got %+v", result)
+	}
+
+	status := pool.Status()
+	if status.TargetCount != 2 || status.TotalCount != 3 {
+		t.Fatalf("expected target count preserved and restored total count exceed it, got %+v", status)
+	}
+}
+
+func TestSimplePoolRestoreFromStoreDoesNotClampToTargetCount(t *testing.T) {
+	t.Helper()
+
+	store := &memoryAccountStore{
+		accounts: []*Account{
+			{JWT: "store-a", Quota: 65},
+			{JWT: "store-b", Quota: 9},
+			{JWT: "store-c", Quota: 7},
+		},
+	}
+
+	pool := NewSimplePoolWithOptions(2, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	}, PoolOptions{
+		Store:        store,
+		LowWatermark: 1,
+	})
+
+	status := pool.Status()
+	if status.TargetCount != 2 || status.TotalCount != 3 || status.RestoreLoaded != 3 {
+		t.Fatalf("expected restore-from-store beyond target count, got %+v", status)
+	}
+}
+
 func TestSimplePoolAutoFillStopsAtTargetSize(t *testing.T) {
 	t.Helper()
 

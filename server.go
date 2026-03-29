@@ -34,6 +34,7 @@ func NewServerHandler(cfg Config, app *App) http.Handler {
 	mux.Handle("/v1/admin/pool", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolStatus)))
 	mux.Handle("/v1/admin/pool/fill", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolFill)))
 	mux.Handle("/v1/admin/pool/import", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolImport)))
+	mux.Handle("/v1/admin/pool/restore", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolRestore)))
 	mux.Handle("/v1/admin/pool/prune", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolPrune)))
 	mux.Handle("/v1/admin/pool/export", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolExport)))
 	mux.Handle("/v1/admin/quota/snapshot", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminQuotaSnapshot)))
@@ -204,6 +205,40 @@ func (a *App) HandleAdminPoolImport(w http.ResponseWriter, r *http.Request) {
 		"validate":      validate,
 		"minimum_quota": minimumQuota,
 	})
+}
+
+func (a *App) HandleAdminPoolRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Accounts []ExportedAccount `json:"accounts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "Request body must be valid JSON", "invalid_request_error")
+		return
+	}
+	if len(body.Accounts) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "accounts must contain at least one account", "invalid_request_error")
+		return
+	}
+
+	accounts := make([]*Account, 0, len(body.Accounts))
+	for _, item := range body.Accounts {
+		accounts = append(accounts, &Account{
+			JWT:   item.JWT,
+			Quota: item.Quota,
+		})
+	}
+
+	result, err := a.pool.RestoreAccounts(accounts)
+	if err != nil {
+		writeOpenAIError(w, http.StatusConflict, err.Error(), "invalid_request_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (a *App) HandleAdminPoolPrune(w http.ResponseWriter, r *http.Request) {

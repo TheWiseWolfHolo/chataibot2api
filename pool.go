@@ -61,6 +61,15 @@ type ImportPoolResult struct {
 	TotalCount int `json:"total_count"`
 }
 
+type RestorePoolResult struct {
+	Requested  int `json:"requested"`
+	Restored   int `json:"restored"`
+	Rejected   int `json:"rejected"`
+	Duplicates int `json:"duplicates"`
+	Overflow   int `json:"overflow"`
+	TotalCount int `json:"total_count"`
+}
+
 type registrationTask struct {
 	snapshot FillTaskSnapshot
 }
@@ -328,22 +337,7 @@ func (p *SimplePool) Release(acc *Account) {
 		return
 	}
 
-	if len(p.reusable) < p.maxSize {
-		p.reusable = append(p.reusable, acc)
-		p.reconcileAutoFillLocked()
-		p.cond.Broadcast()
-		return
-	}
-
-	minIdx := 0
-	for i := 1; i < len(p.reusable); i++ {
-		if p.reusable[i].Quota < p.reusable[minIdx].Quota {
-			minIdx = i
-		}
-	}
-	if acc.Quota > p.reusable[minIdx].Quota {
-		p.reusable[minIdx] = acc
-	}
+	p.reusable = append(p.reusable, acc)
 	p.reconcileAutoFillLocked()
 	p.cond.Broadcast()
 }
@@ -500,11 +494,6 @@ func (p *SimplePool) ImportAccounts(accounts []*Account) ImportPoolResult {
 			result.Duplicates++
 			continue
 		}
-		if len(p.ready)+len(p.reusable) >= p.maxSize {
-			result.Overflow++
-			continue
-		}
-
 		imported := &Account{
 			JWT:   jwt,
 			Quota: acc.Quota,
@@ -521,6 +510,56 @@ func (p *SimplePool) ImportAccounts(accounts []*Account) ImportPoolResult {
 		p.cond.Broadcast()
 	}
 	return result
+}
+
+func (p *SimplePool) RestoreAccounts(accounts []*Account) (RestorePoolResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.borrowed) > 0 {
+		return RestorePoolResult{}, fmt.Errorf("cannot restore while %d accounts are borrowed", len(p.borrowed))
+	}
+
+	var result RestorePoolResult
+	result.Requested = len(accounts)
+
+	restored := make([]*Account, 0, len(accounts))
+	seen := make(map[string]struct{}, len(accounts))
+	for _, acc := range accounts {
+		if acc == nil {
+			result.Rejected++
+			continue
+		}
+		jwt := strings.TrimSpace(acc.JWT)
+		if jwt == "" {
+			result.Rejected++
+			continue
+		}
+		if _, ok := seen[jwt]; ok {
+			result.Duplicates++
+			continue
+		}
+		seen[jwt] = struct{}{}
+
+		if acc.Quota < 2 {
+			result.Rejected++
+			continue
+		}
+		restored = append(restored, &Account{
+			JWT:   jwt,
+			Quota: acc.Quota,
+		})
+	}
+
+	p.ready = restored
+	p.reusable = nil
+	p.pruneShadow = nil
+	result.Restored = len(restored)
+	result.TotalCount = len(p.ready)
+	p.persistLocked()
+	p.reconcileAutoFillLocked()
+	p.cond.Broadcast()
+	return result, nil
 }
 
 func (p *SimplePool) ExportAccounts() []ExportedAccount {
@@ -792,11 +831,6 @@ func (p *SimplePool) restoreFromStore() {
 			rejected++
 			continue
 		}
-		if len(p.ready)+len(p.reusable) >= p.maxSize {
-			rejected++
-			continue
-		}
-
 		p.ready = append(p.ready, &Account{
 			JWT:   jwt,
 			Quota: acc.Quota,
@@ -922,6 +956,7 @@ func clonePooledAccounts(accounts []pooledAccount) []pooledAccount {
 	}
 	return cloned
 }
+
 
 func (p *SimplePool) persistencePath() string {
 	if p == nil || p.store == nil {

@@ -33,6 +33,7 @@ type PoolManager interface {
 	StartFillTask(count int) FillTaskSnapshot
 	Prune() PruneSummary
 	ImportAccounts(accounts []*Account) ImportPoolResult
+	RestoreAccounts(accounts []*Account) (RestorePoolResult, error)
 	ExportAccounts() []ExportedAccount
 }
 

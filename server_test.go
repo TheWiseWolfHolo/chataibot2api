@@ -21,9 +21,12 @@ type fakePool struct {
 	fillTask        FillTaskSnapshot
 	pruneResult     PruneSummary
 	importResult    ImportPoolResult
+	restoreResult   RestorePoolResult
 	imported        []*Account
+	restored        []*Account
 	fillCounts      []int
 	pruneCalls      int
+	restoreErr      error
 }
 
 func (f *fakePool) Acquire(cost int) *Account {
@@ -74,6 +77,21 @@ func (f *fakePool) ImportAccounts(accounts []*Account) ImportPoolResult {
 
 func (f *fakePool) ExportAccounts() []ExportedAccount {
 	return append([]ExportedAccount(nil), f.exported...)
+}
+
+func (f *fakePool) RestoreAccounts(accounts []*Account) (RestorePoolResult, error) {
+	f.restored = append([]*Account(nil), accounts...)
+	if f.restoreErr != nil {
+		return RestorePoolResult{}, f.restoreErr
+	}
+	if f.restoreResult.TotalCount == 0 {
+		f.restoreResult = RestorePoolResult{
+			Requested:  len(accounts),
+			Restored:   len(accounts),
+			TotalCount: len(accounts),
+		}
+	}
+	return f.restoreResult, nil
 }
 
 type fakeBackend struct {
@@ -1290,6 +1308,39 @@ func TestAdminPoolExportRequiresAdminTokenAndReturnsSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"jwt":"jwt-1"`) || !strings.Contains(rec.Body.String(), `"jwt":"jwt-2"`) {
 		t.Fatalf("expected exported jwts in response, got %s", rec.Body.String())
+	}
+}
+
+func TestAdminPoolRestoreReplacesAccountsWithExactPayload(t *testing.T) {
+	t.Helper()
+
+	pool, _, handler := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/pool/restore", strings.NewReader(`{
+		"accounts":[
+			{"jwt":"jwt-restore-a","quota":65},
+			{"jwt":"jwt-restore-b","quota":7}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(pool.restored) != 2 {
+		t.Fatalf("expected 2 restored accounts, got %+v", pool.restored)
+	}
+	if pool.restored[0].JWT != "jwt-restore-a" || pool.restored[0].Quota != 65 {
+		t.Fatalf("unexpected first restored account %+v", pool.restored[0])
+	}
+	if pool.restored[1].JWT != "jwt-restore-b" || pool.restored[1].Quota != 7 {
+		t.Fatalf("unexpected second restored account %+v", pool.restored[1])
+	}
+	if !strings.Contains(rec.Body.String(), `"restored":2`) {
+		t.Fatalf("expected restored count in response, got %s", rec.Body.String())
 	}
 }
 
