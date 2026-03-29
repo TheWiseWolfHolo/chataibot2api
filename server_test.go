@@ -268,6 +268,29 @@ func TestLoadConfigFailsWhenAdminTokenMissing(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsPoolStorePathFromEnv(t *testing.T) {
+	t.Helper()
+
+	cfg, err := LoadConfig([]string{}, func(key string) string {
+		values := map[string]string{
+			"PORT":              "18080",
+			"MAIL_API_BASE_URL": "https://mail.example.com",
+			"MAIL_DOMAIN":       "example.com",
+			"MAIL_ADMIN_TOKEN":  "mail-token",
+			"API_BEARER_TOKEN":  "api-token",
+			"ADMIN_TOKEN":       "admin-token",
+			"POOL_STORE_PATH":   "/data/holo-image/pool.json",
+		}
+		return values[key]
+	})
+	if err != nil {
+		t.Fatalf("expected config to load, got %v", err)
+	}
+	if cfg.PoolStorePath != "/data/holo-image/pool.json" {
+		t.Fatalf("expected pool store path to load from env, got %+v", cfg)
+	}
+}
+
 func TestNewServerHandlerExposesPublicHealthz(t *testing.T) {
 	t.Helper()
 

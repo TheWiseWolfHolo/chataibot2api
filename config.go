@@ -12,6 +12,7 @@ type Config struct {
 	PoolSize                 int
 	PoolWorkerCount          int
 	PoolLowWatermark         int
+	PoolStorePath            string
 	PoolPruneIntervalSeconds int
 	PoolRegistrationInterval int
 	PoolFailureBackoff       int
@@ -31,6 +32,7 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	poolFlag := fs.Int("pool", 10, "指定号池数量")
 	poolWorkerCountFlag := fs.Int("pool-worker-count", 1, "号池注册并发数")
 	poolLowWatermarkFlag := fs.Int("pool-low-watermark", 0, "号池自动补号低水位，达到后自动补回目标池大小")
+	poolStorePathFlag := fs.String("pool-store-path", "", "号池持久化文件路径")
 	poolPruneIntervalFlag := fs.Int("pool-prune-interval", 300, "号池自动清理失效账号间隔（秒）")
 	poolRegistrationIntervalFlag := fs.Int("pool-registration-interval", 15, "每次注册成功后的最小间隔（秒）")
 	poolFailureBackoffFlag := fs.Int("pool-failure-backoff", 60, "注册失败后的退避时间（秒）")
@@ -50,6 +52,7 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 		PoolSize:                 *poolFlag,
 		PoolWorkerCount:          *poolWorkerCountFlag,
 		PoolLowWatermark:         *poolLowWatermarkFlag,
+		PoolStorePath:            strings.TrimSpace(*poolStorePathFlag),
 		PoolPruneIntervalSeconds: *poolPruneIntervalFlag,
 		PoolRegistrationInterval: *poolRegistrationIntervalFlag,
 		PoolFailureBackoff:       *poolFailureBackoffFlag,
@@ -82,6 +85,9 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("invalid POOL_LOW_WATERMARK %q: %w", value, err)
 		}
 		cfg.PoolLowWatermark = parsed
+	}
+	if value := strings.TrimSpace(getenv("POOL_STORE_PATH")); value != "" {
+		cfg.PoolStorePath = value
 	}
 	if value := strings.TrimSpace(getenv("POOL_PRUNE_INTERVAL_SECONDS")); value != "" {
 		parsed, err := strconv.Atoi(value)

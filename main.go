@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"chataibot2api/api"
@@ -96,6 +97,15 @@ func run(args []string, getenv func(string) string) error {
 
 	accountPool := StartPool(cfg)
 	fmt.Println("[*] 号池已启动，准备就绪...")
+	if strings.TrimSpace(cfg.PoolStorePath) != "" {
+		fmt.Printf("[*] 号池持久化已启用：%s\n", cfg.PoolStorePath)
+	}
+	if status := accountPool.Status(); status.PersistenceEnabled && status.RestoreLoaded > 0 {
+		fmt.Printf("[*] 已从持久化凭证恢复 %d 个账号\n", status.RestoreLoaded)
+	}
+	if status := accountPool.Status(); status.LastPersistError != "" {
+		fmt.Printf("[!] 号池持久化异常：%s\n", status.LastPersistError)
+	}
 
 	app := NewApp(accountPool, apiClient, time.Now)
 	handler := NewServerHandler(cfg, app)

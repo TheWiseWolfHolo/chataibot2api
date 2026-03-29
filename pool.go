@@ -25,6 +25,14 @@ type PoolStatus struct {
 	NextRetryAt           *time.Time         `json:"next_retry_at,omitempty"`
 	PruneChecks           int                `json:"prune_checks"`
 	PruneRemoved          int                `json:"prune_removed"`
+	PersistenceEnabled    bool               `json:"persistence_enabled"`
+	PersistencePath       string             `json:"persistence_path,omitempty"`
+	PersistedCount        int                `json:"persisted_count"`
+	RestoreLoaded         int                `json:"restore_loaded"`
+	RestoreRejected       int                `json:"restore_rejected"`
+	LastPersistError      string             `json:"last_persist_error,omitempty"`
+	LastPersistAt         *time.Time         `json:"last_persist_at,omitempty"`
+	LastRestoreAt         *time.Time         `json:"last_restore_at,omitempty"`
 	Tasks                 []FillTaskSnapshot `json:"tasks"`
 }
 
@@ -75,7 +83,7 @@ type SimplePool struct {
 	cond     *sync.Cond
 	ready    []*Account
 	reusable []*Account
-	borrowed int
+	borrowed map[*Account]string
 
 	activeRegistrations   int
 	registrationSuccesses int
@@ -86,6 +94,13 @@ type SimplePool struct {
 	pruneChecks           int
 	pruneRemoved          int
 	autoFillActive        bool
+	store                 AccountStore
+	persistedCount        int
+	restoreLoaded         int
+	restoreRejected       int
+	lastPersistError      string
+	lastPersistAt         time.Time
+	lastRestoreAt         time.Time
 
 	tasks map[string]*registrationTask
 }
@@ -96,6 +111,7 @@ type PoolOptions struct {
 	RegistrationInterval time.Duration
 	FailureBackoff       time.Duration
 	MaxFailureBackoff    time.Duration
+	Store                AccountStore
 }
 
 func NewSimplePool(poolSize int, workerCount int, registrar func() (string, error), quota func(string) int) *SimplePool {
@@ -138,11 +154,14 @@ func NewSimplePoolWithOptions(poolSize int, workerCount int, registrar func() (s
 		registrar:            registrar,
 		quota:                quota,
 		ready:                make([]*Account, 0, poolSize),
+		borrowed:             make(map[*Account]string),
 		reusable:             make([]*Account, 0, poolSize),
 		autoFillActive:       true,
+		store:                options.Store,
 		tasks:                make(map[string]*registrationTask),
 	}
 	pool.cond = sync.NewCond(&pool.mu)
+	pool.restoreFromStore()
 
 	for i := 0; i < workerCount; i++ {
 		go pool.registrationLoop()
@@ -159,9 +178,11 @@ func StartPool(cfg Config) *SimplePool {
 	if workerCount < 1 {
 		workerCount = 1
 	}
+	store := NewFileAccountStore(cfg.PoolStorePath)
 
 	return NewSimplePoolWithOptions(cfg.PoolSize, workerCount, CreateAccount, apiClient.GetCount, PoolOptions{
 		LowWatermark:         cfg.PoolLowWatermark,
+		Store:                store,
 		PruneInterval:        time.Duration(cfg.PoolPruneIntervalSeconds) * time.Second,
 		RegistrationInterval: time.Duration(cfg.PoolRegistrationInterval) * time.Second,
 		FailureBackoff:       time.Duration(cfg.PoolFailureBackoff) * time.Second,
@@ -236,6 +257,7 @@ func (p *SimplePool) createAndEnqueueAccount() (bool, time.Duration) {
 	p.lastRegistrationError = ""
 	p.nextRetryAt = time.Time{}
 	p.ready = append(p.ready, &Account{JWT: jwt, Quota: 65})
+	p.persistLocked()
 	p.reconcileAutoFillLocked()
 	p.cond.Broadcast()
 	return true, 0
@@ -257,14 +279,14 @@ func (p *SimplePool) Acquire(cost int) *Account {
 		if bestIdx != -1 {
 			acc := p.reusable[bestIdx]
 			p.reusable = append(p.reusable[:bestIdx], p.reusable[bestIdx+1:]...)
-			p.borrowed++
+			p.borrowed[acc] = strings.TrimSpace(acc.JWT)
 			return acc
 		}
 
 		if len(p.ready) > 0 {
 			acc := p.ready[0]
 			p.ready = append(p.ready[:0], p.ready[1:]...)
-			p.borrowed++
+			p.borrowed[acc] = strings.TrimSpace(acc.JWT)
 			return acc
 		}
 
@@ -288,10 +310,9 @@ func (p *SimplePool) Release(acc *Account) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.borrowed > 0 {
-		p.borrowed--
-	}
+	delete(p.borrowed, acc)
 	if acc.Quota < 2 {
+		p.persistLocked()
 		p.reconcileAutoFillLocked()
 		if p.autoFillActive {
 			p.cond.Broadcast()
@@ -341,7 +362,7 @@ func (p *SimplePool) Status() PoolStatus {
 		ReadyCount:            len(p.ready),
 		ReusableCount:         len(p.reusable),
 		TotalCount:            len(p.ready) + len(p.reusable),
-		BorrowedCount:         p.borrowed,
+		BorrowedCount:         len(p.borrowed),
 		WorkerCount:           p.workerCount,
 		LowWatermark:          p.lowWatermark,
 		AutoFillActive:        p.autoFillActive,
@@ -354,6 +375,14 @@ func (p *SimplePool) Status() PoolStatus {
 		NextRetryAt:           nextRetryAt,
 		PruneChecks:           p.pruneChecks,
 		PruneRemoved:          p.pruneRemoved,
+		PersistenceEnabled:    p.store != nil,
+		PersistencePath:       p.persistencePath(),
+		PersistedCount:        p.persistedCount,
+		RestoreLoaded:         p.restoreLoaded,
+		RestoreRejected:       p.restoreRejected,
+		LastPersistError:      p.lastPersistError,
+		LastPersistAt:         timePointer(p.lastPersistAt),
+		LastRestoreAt:         timePointer(p.lastRestoreAt),
 		Tasks:                 tasks,
 	}
 }
@@ -455,6 +484,7 @@ func (p *SimplePool) ImportAccounts(accounts []*Account) ImportPoolResult {
 	}
 
 	result.TotalCount = len(p.ready) + len(p.reusable)
+	p.persistLocked()
 	p.reconcileAutoFillLocked()
 	if result.Imported > 0 {
 		p.cond.Broadcast()
@@ -504,6 +534,7 @@ func (p *SimplePool) Prune() PruneSummary {
 	p.reusable = append(p.reusable, keptReusable...)
 	p.pruneChecks += summary.Checked
 	p.pruneRemoved += summary.Removed
+	p.persistLocked()
 	p.reconcileAutoFillLocked()
 	summary.Remaining = len(p.ready) + len(p.reusable)
 	if len(keptReady) > 0 || len(keptReusable) > 0 || p.autoFillActive {
@@ -558,7 +589,7 @@ func (p *SimplePool) reconcileAutoFillLocked() {
 }
 
 func (p *SimplePool) healthyCountLocked() int {
-	return len(p.ready) + len(p.reusable) + p.borrowed
+	return len(p.ready) + len(p.reusable) + len(p.borrowed)
 }
 
 func (p *SimplePool) registrationSuccessDelay() time.Duration {
@@ -615,4 +646,136 @@ func (p *SimplePool) failureDelayForLocked(lastErr string) time.Duration {
 		return p.maxFailureBackoff
 	}
 	return delay
+}
+
+func (p *SimplePool) restoreFromStore() {
+	if p == nil || p.store == nil {
+		return
+	}
+
+	accounts, err := p.store.Load()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.lastRestoreAt = time.Now().UTC()
+	if err != nil {
+		p.lastPersistError = fmt.Sprintf("restore failed: %v", err)
+		return
+	}
+
+	loaded := 0
+	rejected := 0
+	seen := make(map[string]struct{}, len(accounts))
+	for _, acc := range accounts {
+		if acc == nil {
+			rejected++
+			continue
+		}
+		jwt := strings.TrimSpace(acc.JWT)
+		if jwt == "" {
+			rejected++
+			continue
+		}
+		if _, ok := seen[jwt]; ok {
+			rejected++
+			continue
+		}
+		seen[jwt] = struct{}{}
+
+		if acc.Quota < 2 {
+			rejected++
+			continue
+		}
+		if len(p.ready)+len(p.reusable) >= p.maxSize {
+			rejected++
+			continue
+		}
+
+		p.ready = append(p.ready, &Account{
+			JWT:   jwt,
+			Quota: acc.Quota,
+		})
+		loaded++
+	}
+
+	p.restoreLoaded = loaded
+	p.restoreRejected = rejected
+	p.persistedCount = loaded
+	p.lastPersistError = ""
+	p.reconcileAutoFillLocked()
+}
+
+func (p *SimplePool) persistLocked() {
+	if p == nil || p.store == nil {
+		return
+	}
+
+	snapshot := p.snapshotAccountsLocked()
+	if err := p.store.Save(snapshot); err != nil {
+		p.lastPersistError = err.Error()
+		return
+	}
+
+	p.persistedCount = len(snapshot)
+	p.lastPersistError = ""
+	p.lastPersistAt = time.Now().UTC()
+}
+
+func (p *SimplePool) snapshotAccountsLocked() []*Account {
+	if p == nil {
+		return nil
+	}
+
+	result := make([]*Account, 0, len(p.ready)+len(p.reusable)+len(p.borrowed))
+	seen := make(map[string]struct{}, len(result))
+	appendAccount := func(jwt string, quota int) {
+		jwt = strings.TrimSpace(jwt)
+		if jwt == "" || quota < 2 {
+			return
+		}
+		if _, ok := seen[jwt]; ok {
+			return
+		}
+		seen[jwt] = struct{}{}
+		result = append(result, &Account{
+			JWT:   jwt,
+			Quota: quota,
+		})
+	}
+
+	for _, acc := range p.ready {
+		if acc == nil {
+			continue
+		}
+		appendAccount(acc.JWT, acc.Quota)
+	}
+	for _, acc := range p.reusable {
+		if acc == nil {
+			continue
+		}
+		appendAccount(acc.JWT, acc.Quota)
+	}
+	for acc, originalJWT := range p.borrowed {
+		if acc == nil {
+			continue
+		}
+		appendAccount(originalJWT, acc.Quota)
+	}
+
+	return result
+}
+
+func (p *SimplePool) persistencePath() string {
+	if p == nil || p.store == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.store.Path())
+}
+
+func timePointer(ts time.Time) *time.Time {
+	if ts.IsZero() {
+		return nil
+	}
+	value := ts
+	return &value
 }

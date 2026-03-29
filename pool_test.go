@@ -6,6 +6,50 @@ import (
 	"time"
 )
 
+type memoryAccountStore struct {
+	accounts []*Account
+	loadErr  error
+	saveErr  error
+	loads    int
+	saves    int
+}
+
+func (s *memoryAccountStore) Load() ([]*Account, error) {
+	s.loads++
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
+	return cloneAccounts(s.accounts), nil
+}
+
+func (s *memoryAccountStore) Save(accounts []*Account) error {
+	s.saves++
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	s.accounts = cloneAccounts(accounts)
+	return nil
+}
+
+func (s *memoryAccountStore) Path() string {
+	return "memory://pool"
+}
+
+func cloneAccounts(accounts []*Account) []*Account {
+	if len(accounts) == 0 {
+		return nil
+	}
+	cloned := make([]*Account, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc == nil {
+			continue
+		}
+		copyValue := *acc
+		cloned = append(cloned, &copyValue)
+	}
+	return cloned
+}
+
 func TestSimplePoolStartFillTaskCreatesAccountsAsynchronously(t *testing.T) {
 	t.Helper()
 
@@ -265,4 +309,107 @@ func TestSimplePoolRegistrationLoopUsesExponentialFailureBackoffAndTracksError(t
 	}
 
 	t.Fatalf("expected third attempt after exponential backoff, got %d", registerCalls)
+}
+
+func TestSimplePoolRestoresAccountsFromStoreBeforeAutoFill(t *testing.T) {
+	t.Helper()
+
+	store := &memoryAccountStore{
+		accounts: []*Account{
+			{JWT: "jwt-restore-1", Quota: 65},
+			{JWT: "jwt-restore-2", Quota: 32},
+		},
+	}
+
+	registerCalls := 0
+	pool := NewSimplePoolWithOptions(2, 1, func() (string, error) {
+		registerCalls++
+		return fmt.Sprintf("jwt-new-%d", registerCalls), nil
+	}, func(_ string) int {
+		return 65
+	}, PoolOptions{
+		Store:                store,
+		RegistrationInterval: time.Hour,
+	})
+
+	time.Sleep(80 * time.Millisecond)
+	status := pool.Status()
+	if status.TotalCount != 2 {
+		t.Fatalf("expected restored pool size 2, got %+v", status)
+	}
+	if registerCalls != 0 {
+		t.Fatalf("expected no auto registration after restore filled target, got %d", registerCalls)
+	}
+	if !status.PersistenceEnabled || status.PersistencePath != "memory://pool" {
+		t.Fatalf("expected persistence metadata in status, got %+v", status)
+	}
+	if status.RestoreLoaded != 2 || status.RestoreRejected != 0 {
+		t.Fatalf("expected restore counters 2/0, got %+v", status)
+	}
+}
+
+func TestSimplePoolImportAndPrunePersistAccounts(t *testing.T) {
+	t.Helper()
+
+	store := &memoryAccountStore{}
+	pool := NewSimplePoolWithOptions(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(jwt string) int {
+		if jwt == "dead" {
+			return 0
+		}
+		return 65
+	}, PoolOptions{
+		Store: store,
+	})
+
+	result := pool.ImportAccounts([]*Account{
+		{JWT: "live", Quota: 65},
+		{JWT: "dead", Quota: 65},
+	})
+	if result.Imported != 2 {
+		t.Fatalf("expected 2 imports, got %+v", result)
+	}
+	if store.saves == 0 || len(store.accounts) != 2 {
+		t.Fatalf("expected imports to be persisted, saves=%d accounts=%+v", store.saves, store.accounts)
+	}
+
+	summary := pool.Prune()
+	if summary.Removed != 1 {
+		t.Fatalf("expected prune to remove invalid account, got %+v", summary)
+	}
+	if len(store.accounts) != 1 || store.accounts[0].JWT != "live" {
+		t.Fatalf("expected persisted store to keep only live account, got %+v", store.accounts)
+	}
+}
+
+func TestSimplePoolReleaseInvalidAccountUpdatesPersistence(t *testing.T) {
+	t.Helper()
+
+	store := &memoryAccountStore{
+		accounts: []*Account{
+			{JWT: "live", Quota: 65},
+		},
+	}
+	pool := NewSimplePoolWithOptions(1, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) int {
+		return 0
+	}, PoolOptions{
+		Store: store,
+	})
+
+	acc := pool.Acquire(1)
+	if acc == nil {
+		t.Fatalf("expected acquired account, got nil")
+	}
+	pool.Release(acc)
+
+	if len(store.accounts) != 0 {
+		t.Fatalf("expected invalid released account to be removed from persisted store, got %+v", store.accounts)
+	}
+	status := pool.Status()
+	if status.PersistedCount != 0 {
+		t.Fatalf("expected persisted count 0 after invalid release, got %+v", status)
+	}
 }
