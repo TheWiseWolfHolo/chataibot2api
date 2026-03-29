@@ -4,15 +4,27 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>holo-image-api 后台登录</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/admin/assets/styles.css" />
 </head>
 <body class="login-body">
   <main class="login-shell">
-    <section class="login-panel">
+    <section class="login-poster">
       <p class="eyebrow">holo-image-api</p>
       <h1>后台登录</h1>
-      <p class="subtle login-copy">输入 admin key。</p>
+      <p class="subtle login-copy">只需要 admin key。</p>
+      <div class="login-strip">
+        <span class="pill warn">POOL</span>
+        <span class="pill good">MODELS</span>
+        <span class="pill">LOG</span>
+      </div>
+    </section>
 
+    <section class="login-panel">
+      <p class="eyebrow">ACCESS</p>
+      <h2>输入凭证</h2>
       <form id="loginForm" class="login-form">
         <label class="field">
           <span>Admin Key</span>
@@ -21,7 +33,7 @@
 
         <p id="loginError" class="inline-error" hidden></p>
 
-        <button type="submit" class="button primary wide">登录</button>
+        <button type="submit" class="button primary wide" id="loginSubmit">登录</button>
       </form>
     </section>
   </main>

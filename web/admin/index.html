@@ -4,78 +4,66 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>holo-image-api 后台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/admin/assets/styles.css" />
 </head>
 <body class="admin-body">
+  <div class="page-decor" aria-hidden="true">
+    <span class="float-tag float-tag-red">POOL</span>
+    <span class="float-tag float-tag-yellow">ADMIN</span>
+    <span class="float-tag float-tag-violet">LIVE</span>
+  </div>
+
   <div class="admin-shell">
-    <aside class="sidebar">
-      <div class="brand-block">
-        <div class="brand-mark">HI</div>
-        <div>
-          <p class="eyebrow">当前项目</p>
-          <h1>holo-image-api</h1>
-          <p class="sidebar-subtitle">管理后台</p>
-        </div>
+    <header class="surface topbar">
+      <div class="brand-rack">
+        <span class="visually-hidden">当前项目</span>
+        <span class="visually-hidden">服务状态</span>
+        <p class="eyebrow">holo-image-api</p>
+        <h1>后台控制台</h1>
+        <p class="subtle" id="topline">补号、清理、模型和日志都在一张作战面板。</p>
       </div>
 
-      <div class="sidebar-panel">
-        <div class="sidebar-row">
-          <span>主域名</span>
-          <strong>holo-image-api.zeabur.app</strong>
-        </div>
-        <div class="sidebar-row">
-          <span>刷新状态</span>
-          <span class="badge" id="refreshState">未刷新</span>
+      <div class="topbar-side">
+        <span class="badge status-badge" id="refreshState">未刷新</span>
+        <div class="topbar-actions">
+          <button type="button" class="button secondary" id="refreshBtn">刷新</button>
+          <button type="button" class="button ghost" id="logoutBtn">退出</button>
         </div>
       </div>
+    </header>
 
-      <nav class="sidebar-nav" aria-label="后台导航">
-        <a class="nav-link" href="#overviewSection">总览</a>
-        <a class="nav-link" href="#poolSectionWrap">号池</a>
-        <a class="nav-link" href="#modelsSectionWrap">模型</a>
-        <a class="nav-link" href="#migrationSectionWrap">迁移</a>
-        <a class="nav-link" href="#actionsSectionWrap">操作</a>
-        <a class="nav-link" href="#dangerSectionWrap">危险操作</a>
-        <a class="nav-link" href="#logSectionWrap">日志</a>
-      </nav>
+    <nav class="jumpbar" aria-label="后台导航">
+      <a class="jump-link" href="#overviewSection">总览</a>
+      <a class="jump-link" href="#poolSectionWrap">号池</a>
+      <a class="jump-link" href="#actionsSectionWrap">操作</a>
+      <a class="jump-link" href="#modelsSectionWrap">模型</a>
+      <a class="jump-link" href="#migrationSectionWrap">迁移</a>
+      <a class="jump-link" href="#dangerSectionWrap">危险操作</a>
+      <a class="jump-link" href="#logSectionWrap">日志</a>
+    </nav>
 
-      <div class="sidebar-actions">
-        <button type="button" class="button secondary wide" id="refreshBtn">刷新</button>
-        <button type="button" class="button ghost wide" id="logoutBtn">退出</button>
-      </div>
-    </aside>
-
-    <main class="workspace">
-      <header class="workspace-header">
-        <div>
-          <p class="eyebrow">运行态</p>
-          <h2>服务状态</h2>
-          <p class="subtle" id="topline">正在检查当前会话与实例状态。</p>
-        </div>
-        <div class="workspace-project">
-          <span class="pill">当前项目</span>
-          <strong>holo-image-api</strong>
-        </div>
-      </header>
-
+    <main class="admin-main">
       <section class="surface summary-surface" id="overviewSection">
         <div class="section-head">
           <div>
             <p class="eyebrow">SUMMARY</p>
-            <h3>总览</h3>
+            <h2>总览</h2>
           </div>
-          <p class="section-note">先看 live、主域名、补号状态、错误和刷新时间。</p>
+          <p class="section-note">只保留现在最影响判断的 3 个信号。</p>
         </div>
-        <div class="metrics-grid" id="statusGrid"></div>
+        <div class="metrics-grid metrics-grid-compact" id="statusGrid"></div>
       </section>
 
       <section class="surface pool-surface" id="poolSectionWrap">
         <div class="section-head">
           <div>
             <p class="eyebrow">POOL</p>
-            <h3>号池</h3>
+            <h2>号池</h2>
           </div>
-          <p class="section-note">运行池、持久化、补号和清理状态都在这里。</p>
+          <p class="section-note">把实时池、持久化、恢复和补号状态摆清楚。</p>
         </div>
         <div id="poolSection"></div>
       </section>
@@ -84,9 +72,9 @@
         <div class="section-head">
           <div>
             <p class="eyebrow">ACTIONS</p>
-            <h3>常用操作</h3>
+            <h2>常用操作</h2>
           </div>
-          <p class="section-note">高频操作放前面，不把页面做成展示页。</p>
+          <p class="section-note">先补号，再清理，再导入。</p>
         </div>
         <div id="actionsSection"></div>
       </section>
@@ -95,9 +83,9 @@
         <div class="section-head">
           <div>
             <p class="eyebrow">MODELS</p>
-            <h3>模型</h3>
+            <h2>模型</h2>
           </div>
-          <p class="section-note">按文本 / 图片拆开，别再堆成一片小标签。</p>
+          <p class="section-note">文本和图片分开看，能力直接写明白。</p>
         </div>
         <div id="modelsSection"></div>
       </section>
@@ -106,9 +94,9 @@
         <div class="section-head">
           <div>
             <p class="eyebrow">MIGRATION</p>
-            <h3>迁移</h3>
+            <h2>迁移</h2>
           </div>
-          <p class="section-note">只看来源、结果和错误。</p>
+          <p class="section-note">只看旧池来源、导入结果和最近报错。</p>
         </div>
         <div id="migrationSection"></div>
       </section>
@@ -117,9 +105,9 @@
         <div class="section-head">
           <div>
             <p class="eyebrow">DANGER</p>
-            <h3>危险操作</h3>
+            <h2>危险操作</h2>
           </div>
-          <p class="section-note">和常用操作彻底分开。</p>
+          <p class="section-note">只在你确定切换完成之后再动手。</p>
         </div>
         <div id="dangerSection"></div>
       </section>
@@ -128,9 +116,9 @@
         <div class="section-head">
           <div>
             <p class="eyebrow">LOG</p>
-            <h3>日志</h3>
+            <h2>日志</h2>
           </div>
-          <p class="section-note">保留最近的结果和错误，不写废话。</p>
+          <p class="section-note">最近结果与错误按时间倒序保留。</p>
         </div>
         <div id="logSection"></div>
       </section>

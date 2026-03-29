@@ -141,30 +141,23 @@ function currentLastError(snapshot) {
 }
 
 function renderStatus(snapshot) {
-  const { meta, pool, migration } = snapshot;
+  const { pool } = snapshot;
   const refreshAt = formatDateTime(snapshot.refreshedAt);
-  const primaryLabel = meta.is_primary_target ? '当前实例就是主域名' : '当前实例不是主域名';
   const autoFillLabel = pool.auto_fill_active ? '自动补号运行中' : '自动补号空闲';
+  const persistedLabel = pool.persistence_enabled
+    ? `已持久化 ${formatCount(pool.persisted_count)}`
+    : '未启用持久化';
 
   statusGrid.innerHTML = [
-    metric('当前实例', meta.instance_name || '未配置', meta.service_label || 'service_label 未配置'),
-    metric('部署来源', meta.deploy_source || '未配置', meta.image_ref || 'image_ref 未配置'),
-    metric('当前构建版本', meta.version || 'unknown'),
-    metric('当前实例地址', meta.public_base_url || '未配置'),
-    metric('主域名状态', primaryLabel, meta.primary_public_base_url || 'primary_public_base_url 未配置'),
-    metric('当前总号数', formatCount(pool.total_count), `已持久化 ${formatCount(pool.persisted_count)}`),
+    metric('当前总号数', formatCount(pool.total_count), persistedLabel),
     metric('低余额号', formatCount(pool.low_quota_count), autoFillLabel),
     metric('最后错误', currentLastError(snapshot), `最后刷新 ${refreshAt}`),
   ].join('');
 
-  topline.textContent = `实例 ${meta.instance_name || '未配置'} · service ${meta.service_label || '未配置'} · ${meta.deploy_source || '未配置来源'} · ${primaryLabel}`;
+  topline.textContent = '补号、清理、模型和日志都在一张作战面板。';
 
   const tone = state.bannerError ? 'danger' : pool.auto_fill_active ? 'warn' : 'good';
   setRefreshState(`最后刷新 ${refreshAt}`, tone);
-
-  if (migration?.last_error) {
-    pushLog(`最近迁移报错：${migration.last_error}`, true);
-  }
 }
 
 function renderPool(snapshot) {
@@ -175,12 +168,12 @@ function renderPool(snapshot) {
       <div class="data-item"><strong>ready / reusable / borrowed</strong><span>${formatCount(pool.ready_count)} / ${formatCount(pool.reusable_count)} / ${formatCount(pool.borrowed_count)}</span></div>
       <div class="data-item"><strong>目标池 / 低水位</strong><span>${formatCount(pool.target_count)} / ${formatCount(pool.low_watermark)}</span></div>
       <div class="data-item"><strong>低余额号</strong><span>${formatCount(pool.low_quota_count)}</span></div>
-      <div class="data-item"><strong>注册并发</strong><span>${formatCount(pool.active_registrations)}</span></div>
+      <div class="data-item"><strong>正在注册</strong><span>${formatCount(pool.active_registrations)}</span></div>
       <div class="data-item"><strong>注册失败累计</strong><span>${formatCount(pool.registration_failures)}</span></div>
-      <div class="data-item"><strong>上次落盘</strong><span>${formatDateTime(pool.last_persist_at)}</span></div>
-      <div class="data-item"><strong>上次恢复</strong><span>${formatDateTime(pool.last_restore_at)}</span></div>
-      <div class="data-item"><strong>持久化文件</strong><span>${escapeHtml(pool.persistence_path || '未配置')}</span></div>
-      <div class="data-item"><strong>恢复装载 / 拒绝</strong><span>${formatCount(pool.restore_loaded)} / ${formatCount(pool.restore_rejected)}</span></div>
+      <div class="data-item"><strong>本次启动恢复</strong><span>${formatCount(pool.restore_loaded)}</span><small>拒绝 ${formatCount(pool.restore_rejected)}</small></div>
+      <div class="data-item"><strong>上次恢复时间</strong><span class="value-compact">${formatDateTime(pool.last_restore_at)}</span></div>
+      <div class="data-item"><strong>上次落盘</strong><span class="value-compact">${formatDateTime(pool.last_persist_at)}</span></div>
+      <div class="data-item"><strong>持久化文件</strong><span class="value-compact">${escapeHtml(pool.persistence_path || '未配置')}</span></div>
       <div class="data-item"><strong>prune 已删</strong><span>${formatCount(pool.prune_removed)}</span></div>
       <div class="data-item"><strong>下次重试</strong><span>${formatDateTime(pool.next_retry_at)}</span></div>
     </div>
@@ -276,7 +269,7 @@ function renderMigration(snapshot) {
   const { migration, meta } = snapshot;
   migrationSection.innerHTML = `
     <div class="data-grid">
-      <div class="data-item"><strong>来源地址</strong><span>${escapeHtml(meta.primary_public_base_url || '未配置')}</span></div>
+      <div class="data-item"><strong>旧池来源</strong><span class="value-compact">${escapeHtml(meta.primary_public_base_url || '未配置')}</span></div>
       <div class="data-item"><strong>请求导入</strong><span>${formatCount(migration.requested)}</span></div>
       <div class="data-item"><strong>成功导入</strong><span>${formatCount(migration.imported)}</span></div>
       <div class="data-item"><strong>重复跳过</strong><span>${formatCount(migration.duplicates)}</span></div>
@@ -388,7 +381,7 @@ async function refreshAll() {
       migration,
       refreshedAt: new Date().toISOString(),
     };
-    pushLog(`面板已刷新：${meta.instance_name || meta.service_label || '未命名实例'}`);
+    pushLog('面板已刷新');
     renderSnapshot();
   } catch (error) {
     if (error.status === 401) {
@@ -400,7 +393,7 @@ async function refreshAll() {
     if (state.snapshot) {
       renderSnapshot();
     } else {
-      topline.textContent = state.bannerError;
+      topline.textContent = '暂时拿不到后台状态。';
       setRefreshState('刷新失败', 'danger');
       renderLogs();
     }
