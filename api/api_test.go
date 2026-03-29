@@ -18,12 +18,16 @@ func TestSendRegisterRequestPrimesSignupSessionAndVerifyReusesIt(t *testing.T) {
 	var signupHits atomic.Int32
 	var registerHits atomic.Int32
 	var verifyHits atomic.Int32
+	var signupSpoofIP atomic.Value
+	var registerSpoofIP atomic.Value
+	var verifySpoofIP atomic.Value
 
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/auth/sign-up":
 			signupHits.Add(1)
+			signupSpoofIP.Store(strings.TrimSpace(r.Header.Get("X-Forwarded-For")))
 			http.SetCookie(w, &http.Cookie{
 				Name:  sessionCookieName,
 				Value: sessionCookieValue,
@@ -33,6 +37,7 @@ func TestSendRegisterRequestPrimesSignupSessionAndVerifyReusesIt(t *testing.T) {
 			_, _ = w.Write([]byte("ok"))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/register":
 			registerHits.Add(1)
+			registerSpoofIP.Store(strings.TrimSpace(r.Header.Get("X-Forwarded-For")))
 			cookie, err := r.Cookie(sessionCookieName)
 			if err != nil || cookie.Value != sessionCookieValue {
 				http.Error(w, `{"message":"Отказано вдоступе"}`, http.StatusForbidden)
@@ -61,6 +66,7 @@ func TestSendRegisterRequestPrimesSignupSessionAndVerifyReusesIt(t *testing.T) {
 			_, _ = w.Write([]byte(`{"success":true}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/register/verify":
 			verifyHits.Add(1)
+			verifySpoofIP.Store(strings.TrimSpace(r.Header.Get("X-Forwarded-For")))
 			cookie, err := r.Cookie(sessionCookieName)
 			if err != nil || cookie.Value != sessionCookieValue {
 				http.Error(w, `{"message":"Отказано вдоступе"}`, http.StatusForbidden)
@@ -108,6 +114,16 @@ func TestSendRegisterRequestPrimesSignupSessionAndVerifyReusesIt(t *testing.T) {
 	}
 	if verifyHits.Load() != 1 {
 		t.Fatalf("expected 1 verify hit, got %d", verifyHits.Load())
+	}
+
+	signupIP, _ := signupSpoofIP.Load().(string)
+	registerIP, _ := registerSpoofIP.Load().(string)
+	verifyIP, _ := verifySpoofIP.Load().(string)
+	if signupIP == "" || registerIP == "" || verifyIP == "" {
+		t.Fatalf("expected spoofed ip header on signup/register/verify, got signup=%q register=%q verify=%q", signupIP, registerIP, verifyIP)
+	}
+	if signupIP != registerIP || registerIP != verifyIP {
+		t.Fatalf("expected signup/register/verify to reuse same spoofed ip, got signup=%q register=%q verify=%q", signupIP, registerIP, verifyIP)
 	}
 }
 

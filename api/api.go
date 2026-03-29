@@ -69,9 +69,10 @@ type ChataibotEditImageResp struct {
 }
 
 type APIClient struct {
-	httpClient *http.Client
-	webBaseURL string
-	apiBaseURL string
+	httpClient          *http.Client
+	webBaseURL          string
+	apiBaseURL          string
+	registrationSpoofIP string
 }
 
 func NewAPIClient() *APIClient {
@@ -105,6 +106,46 @@ func (c *APIClient) applyCommonBrowserHeaders(req *http.Request) {
 	req.Header.Set("Referer", c.signupURL())
 }
 
+func (c *APIClient) ensureRegistrationSpoofIP() string {
+	if c == nil {
+		return ""
+	}
+	if strings.TrimSpace(c.registrationSpoofIP) != "" {
+		return c.registrationSpoofIP
+	}
+
+	firstOctetCandidates := []int64{11, 12, 13, 23, 31, 37, 45, 52, 61, 73, 83, 91, 101, 111, 121, 131, 141, 151, 161, 171, 181, 191, 201, 211, 222}
+	firstIdx, err := rand.Int(rand.Reader, big.NewInt(int64(len(firstOctetCandidates))))
+	if err != nil {
+		c.registrationSpoofIP = "45.66.77.88"
+		return c.registrationSpoofIP
+	}
+
+	octets := []int64{firstOctetCandidates[firstIdx.Int64()]}
+	for range 3 {
+		next, err := rand.Int(rand.Reader, big.NewInt(254))
+		if err != nil {
+			octets = append(octets, 88)
+			continue
+		}
+		octets = append(octets, next.Int64()+1)
+	}
+
+	c.registrationSpoofIP = fmt.Sprintf("%d.%d.%d.%d", octets[0], octets[1], octets[2], octets[3])
+	return c.registrationSpoofIP
+}
+
+func (c *APIClient) applyRegistrationSpoofHeaders(req *http.Request) {
+	ip := c.ensureRegistrationSpoofIP()
+	if ip == "" {
+		return
+	}
+	req.Header.Set("X-Forwarded-For", ip)
+	req.Header.Set("X-Real-IP", ip)
+	req.Header.Set("CF-Connecting-IP", ip)
+	req.Header.Set("True-Client-IP", ip)
+}
+
 func (c *APIClient) primeSignupSession() error {
 	req, err := http.NewRequest(http.MethodGet, c.signupURL(), nil)
 	if err != nil {
@@ -112,6 +153,7 @@ func (c *APIClient) primeSignupSession() error {
 	}
 	req.Header.Set("User-Agent", defaultBrowserUserAgent)
 	req.Header.Set("Accept-Language", defaultAcceptLanguage)
+	c.applyRegistrationSpoofHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -156,6 +198,7 @@ func (c *APIClient) SendRegisterRequest(email string) error {
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 	c.applyCommonBrowserHeaders(req)
+	c.applyRegistrationSpoofHeaders(req)
 
 	fmt.Printf("[*] 正在向目标网站注册账号：%s...\n", email)
 	resp, err := c.httpClient.Do(req)
@@ -196,6 +239,7 @@ func (c *APIClient) VerifyAccount(email, code string) (string, error) {
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 	c.applyCommonBrowserHeaders(req)
+	c.applyRegistrationSpoofHeaders(req)
 
 	fmt.Printf("[*] 正在提交验证码 [%s] 激活账号...\n", code)
 	resp, err := c.httpClient.Do(req)
