@@ -1478,6 +1478,32 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	}
 }
 
+func TestHandleAdminDashboardPageServesQuotaFirstLayout(t *testing.T) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	rec := httptest.NewRecorder()
+	HandleAdminDashboardPage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, ">LIVE<") {
+		t.Fatalf("expected LIVE decoration removed, got %s", body)
+	}
+	if !strings.Contains(body, `id="quotaOverviewSection"`) {
+		t.Fatalf("expected quota overview section, got %s", body)
+	}
+	if !strings.Contains(body, `id="quotaTableSection"`) {
+		t.Fatalf("expected quota table section, got %s", body)
+	}
+	if !strings.Contains(body, `<details class="surface fold-panel"`) {
+		t.Fatalf("expected collapsed secondary sections, got %s", body)
+	}
+}
+
 func TestAdminUIRoutesServeLoginPageAndAssets(t *testing.T) {
 	t.Helper()
 

@@ -13,17 +13,14 @@
   <div class="page-decor" aria-hidden="true">
     <span class="float-tag float-tag-red">POOL</span>
     <span class="float-tag float-tag-yellow">ADMIN</span>
-    <span class="float-tag float-tag-violet">LIVE</span>
   </div>
 
   <div class="admin-shell">
     <header class="surface topbar">
       <div class="brand-rack">
-        <span class="visually-hidden">当前项目</span>
-        <span class="visually-hidden">服务状态</span>
         <p class="eyebrow">holo-image-api</p>
         <h1>后台控制台</h1>
-        <p class="subtle" id="topline">补号、清理、模型和日志都在一张作战面板。</p>
+        <p class="subtle" id="topline">首屏只保留额度总览与明细表。</p>
       </div>
 
       <div class="topbar-side">
@@ -35,93 +32,52 @@
       </div>
     </header>
 
-    <nav class="jumpbar" aria-label="后台导航">
-      <a class="jump-link" href="#overviewSection">总览</a>
-      <a class="jump-link" href="#poolSectionWrap">号池</a>
-      <a class="jump-link" href="#actionsSectionWrap">操作</a>
-      <a class="jump-link" href="#modelsSectionWrap">模型</a>
-      <a class="jump-link" href="#migrationSectionWrap">迁移</a>
-      <a class="jump-link" href="#dangerSectionWrap">危险操作</a>
-      <a class="jump-link" href="#logSectionWrap">日志</a>
-    </nav>
-
-    <main class="admin-main">
-      <section class="surface summary-surface" id="overviewSection">
-        <div class="section-head">
+    <main class="admin-main admin-main-tight">
+      <section class="surface summary-surface" id="quotaOverviewSection">
+        <div class="section-head compact-head">
           <div>
-            <p class="eyebrow">SUMMARY</p>
-            <h2>总览</h2>
+            <p class="eyebrow">QUOTA</p>
+            <h2>额度总览</h2>
           </div>
-          <p class="section-note">只保留现在最影响判断的 3 个信号。</p>
+          <p class="section-note">总览基于缓存快照</p>
         </div>
-        <div class="metrics-grid metrics-grid-compact" id="statusGrid"></div>
+        <div class="overview-strip" id="quotaOverviewGrid"></div>
+        <div id="statusGrid" hidden></div>
       </section>
 
-      <section class="surface pool-surface" id="poolSectionWrap">
-        <div class="section-head">
+      <section class="surface table-surface" id="quotaTableSection">
+        <div class="section-head compact-head">
           <div>
-            <p class="eyebrow">POOL</p>
-            <h2>号池</h2>
+            <p class="eyebrow">DETAIL</p>
+            <h2>号池明细</h2>
           </div>
-          <p class="section-note">把实时池、持久化、恢复和补号状态摆清楚。</p>
+          <p class="section-note" id="probeState">默认展示缓存额度</p>
         </div>
-        <div id="poolSection"></div>
+        <div id="quotaTableTools"></div>
+        <div id="quotaTableWrap"></div>
+        <div id="poolSection" hidden></div>
+        <div id="actionsSection" hidden></div>
       </section>
 
-      <section class="surface actions-surface" id="actionsSectionWrap">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">ACTIONS</p>
-            <h2>常用操作</h2>
-          </div>
-          <p class="section-note">先补号，再清理，再导入。</p>
-        </div>
-        <div id="actionsSection"></div>
-      </section>
-
-      <section class="surface models-surface" id="modelsSectionWrap">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">MODELS</p>
-            <h2>模型</h2>
-          </div>
-          <p class="section-note">文本和图片分开看，能力直接写明白。</p>
-        </div>
+      <details class="surface fold-panel" id="modelsFold">
+        <summary>模型支持</summary>
         <div id="modelsSection"></div>
-      </section>
+      </details>
 
-      <section class="surface migration-surface" id="migrationSectionWrap">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">MIGRATION</p>
-            <h2>迁移</h2>
-          </div>
-          <p class="section-note">只看旧池来源、导入结果和最近报错。</p>
-        </div>
+      <details class="surface fold-panel" id="migrationFold">
+        <summary>迁移结果</summary>
         <div id="migrationSection"></div>
-      </section>
+      </details>
 
-      <section class="surface danger-surface" id="dangerSectionWrap">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">DANGER</p>
-            <h2>危险操作</h2>
-          </div>
-          <p class="section-note">只在你确定切换完成之后再动手。</p>
-        </div>
+      <details class="surface fold-panel" id="dangerFold">
+        <summary>危险操作</summary>
         <div id="dangerSection"></div>
-      </section>
+      </details>
 
-      <section class="surface logs-surface" id="logSectionWrap">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">LOG</p>
-            <h2>日志</h2>
-          </div>
-          <p class="section-note">最近结果与错误按时间倒序保留。</p>
-        </div>
+      <details class="surface fold-panel" id="logFold">
+        <summary>日志</summary>
         <div id="logSection"></div>
-      </section>
+      </details>
     </main>
   </div>
 
