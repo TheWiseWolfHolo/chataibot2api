@@ -2,20 +2,19 @@
 
 This file applies to the repository root and all files under it.
 
-## Subagent model defaults
+## Execution defaults
 
-- Default subagent model for implementation, review, and final review work in this repo: `gpt-5.4`
+- Default to **main-thread execution** in this repo. Do not use `spawn_agent` unless the user explicitly asks for subagents or parallel delegation.
+- If the user explicitly asks to use subagents, prefer `gpt-5.4` for both implementation and review work in this repo.
 - Default reviewer reasoning effort: `high`
 - Default implementer reasoning effort: `high`
 - You may lower implementer reasoning effort to `medium` only for narrow, mechanical edits with clear tests and low integration risk.
-- Prefer `gpt-5.3-codex` only when the user explicitly asks for a speed/cost tradeoff, or when the task is purely mechanical and the controller states why that downgrade is acceptable.
 - Do not default to `gpt-5.2` in this repo.
 
 ## Coordination defaults
 
 - During plan execution, keep one implementation task active at a time unless write scopes are fully disjoint.
-- For code changes, complete the sequence: implementer -> spec review -> code quality review before marking a task complete.
-- Do not let a slow reviewer block the whole rollout indefinitely; the controller should continue driving verification and coordination in the main thread.
+- Prefer direct local verification in the main thread over waiting on auxiliary reviewers.
 
 ## Pool safety during admin/dashboard work
 
