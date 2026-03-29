@@ -43,9 +43,12 @@ const state = {
     page: 1,
     pageSize: 30,
   },
+  probeLimit: 30,
+  fillCount: 30,
   logs: [],
   refreshing: false,
   probing: false,
+  filling: false,
   bannerError: '',
 };
 
@@ -71,6 +74,18 @@ function formatDateTime(value) {
     return escapeHtml(value);
   }
   return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function toPositiveInt(value, fallback = 1) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  const rounded = Math.floor(numeric);
+  if (rounded < 1) {
+    return fallback;
+  }
+  return rounded;
 }
 
 function pushLog(message, isError = false) {
@@ -252,6 +267,19 @@ function getFilteredRows() {
   return sorted;
 }
 
+function getPaginationState(rows) {
+  const totalPages = Math.max(1, Math.ceil(rows.length / state.pagination.pageSize));
+  const page = Math.min(Math.max(state.pagination.page, 1), totalPages);
+  const startIndex = (page - 1) * state.pagination.pageSize;
+  const pagedRows = rows.slice(startIndex, startIndex + state.pagination.pageSize);
+  return {
+    totalPages,
+    page,
+    startIndex,
+    pagedRows,
+  };
+}
+
 function renderQuotaOverview() {
   const summary = state.snapshot?.summary || {
     total_count: 0,
@@ -270,7 +298,12 @@ function renderQuotaOverview() {
 
 function renderQuotaTableTools() {
   const rows = getFilteredRows();
-  const disabled = state.probing || rows.length === 0 ? 'disabled' : '';
+  const { page, totalPages, pagedRows } = getPaginationState(rows);
+  const pageProbeDisabled = state.probing || pagedRows.length === 0 ? 'disabled' : '';
+  const customProbeDisabled = state.probing || rows.length === 0 ? 'disabled' : '';
+  const fillDisabled = state.filling ? 'disabled' : '';
+  const fillCount = toPositiveInt(state.fillCount, 30);
+  const probeLimit = Math.min(toPositiveInt(state.probeLimit, state.pagination.pageSize), Math.max(rows.length, 1));
   quotaTableTools.innerHTML = `
     <div class="action-row quota-toolbar" style="margin-bottom: 16px; flex-wrap: wrap; align-items: end; gap: 12px;">
       <label class="field" style="min-width: 150px;">
@@ -290,6 +323,7 @@ function renderQuotaTableTools() {
           <option value="ready">ready</option>
           <option value="reusable">reusable</option>
           <option value="borrowed">borrowed</option>
+          <option value="persisted">persisted</option>
         </select>
       </label>
       <label class="field" style="min-width: 240px; flex: 1 1 240px;">
@@ -313,7 +347,21 @@ function renderQuotaTableTools() {
           <option value="200">200</option>
         </select>
       </label>
-      <button type="button" class="button primary" id="probeBtn" ${disabled}>${state.probing ? '核验中' : `实时核验当前筛选 (${rows.length})`}</button>
+      <label class="field" style="min-width: 140px;">
+        <span>补号数量</span>
+        <input id="fillCountInput" type="number" min="1" step="1" value="${escapeHtml(String(fillCount))}" />
+      </label>
+      <button type="button" class="button secondary" id="fillBtn" ${fillDisabled}>${state.filling ? '补号中' : '开始补号'}</button>
+      <button type="button" class="button primary" id="probePageBtn" ${pageProbeDisabled}>${state.probing ? '核验中' : `核验当前页 (${pagedRows.length})`}</button>
+      <label class="field" style="min-width: 140px;">
+        <span>核验前 N 条</span>
+        <input id="probeLimitInput" type="number" min="1" step="1" max="${Math.max(rows.length, 1)}" value="${escapeHtml(String(probeLimit))}" />
+      </label>
+      <button type="button" class="button secondary" id="probeLimitBtn" ${customProbeDisabled}>${state.probing ? '核验中' : `核验前 ${probeLimit} 条`}</button>
+    </div>
+    <div class="strip">
+      ${pill(`当前筛选 ${rows.length} 条`)}
+      ${pill(`当前页 ${page} / ${totalPages}`)}
     </div>
   `;
 
@@ -347,23 +395,24 @@ function renderQuotaTableTools() {
     state.pagination.page = 1;
     renderQuotaTable();
   });
-  document.getElementById('probeBtn')?.addEventListener('click', runProbeCurrentFilter);
+  document.getElementById('fillCountInput')?.addEventListener('input', (event) => {
+    state.fillCount = toPositiveInt(event.target.value, state.fillCount || 30);
+  });
+  document.getElementById('probeLimitInput')?.addEventListener('input', (event) => {
+    state.probeLimit = toPositiveInt(event.target.value, state.probeLimit || state.pagination.pageSize);
+  });
+  document.getElementById('fillBtn')?.addEventListener('click', runFill);
+  document.getElementById('probePageBtn')?.addEventListener('click', runProbeCurrentPage);
+  document.getElementById('probeLimitBtn')?.addEventListener('click', runProbeCustomLimit);
 }
 
 function renderQuotaTable() {
   renderQuotaTableTools();
   const rows = getFilteredRows();
-  const totalPages = Math.max(1, Math.ceil(rows.length / state.pagination.pageSize));
-  if (state.pagination.page > totalPages) {
-    state.pagination.page = totalPages;
-  }
-  if (state.pagination.page < 1) {
-    state.pagination.page = 1;
-  }
-  const startIndex = (state.pagination.page - 1) * state.pagination.pageSize;
-  const pagedRows = rows.slice(startIndex, startIndex + state.pagination.pageSize);
+  const { totalPages, page, startIndex, pagedRows } = getPaginationState(rows);
+  state.pagination.page = page;
   probeState.textContent = state.probing
-    ? '正在核验当前筛选结果'
+    ? '正在执行额度核验'
     : `当前筛选 ${rows.length} 条；第 ${state.pagination.page} / ${totalPages} 页；总览仍基于缓存快照`;
 
   if (!rows.length) {
@@ -381,6 +430,7 @@ function renderQuotaTable() {
             <th>JWT</th>
             <th>池位</th>
             <th>最近更新时间</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -403,6 +453,7 @@ function renderQuotaTable() {
                 </td>
                 <td>${escapeHtml(row.pool_bucket || 'unknown')}</td>
                 <td>${formatDateTime(row.last_checked_at)}</td>
+                <td><button type="button" class="button ghost" ${state.probing ? 'disabled' : ''} onclick="runProbeSingle('${escapeHtml(row.jwt)}')">单个核验</button></td>
               </tr>
             `;
           }).join('')}
@@ -437,9 +488,17 @@ function renderQuotaTable() {
   });
 }
 
-async function runProbeCurrentFilter() {
-  const rows = getFilteredRows();
-  if (!rows.length || state.probing) {
+function applyProbePayload(payload) {
+  for (const item of payload.results || []) {
+    state.probeOverlay.set(item.jwt, {
+      ...item,
+      checked_at: payload.checked_at,
+    });
+  }
+}
+
+async function runProbeForJWTs(jwts, successLabel) {
+  if (!jwts.length || state.probing) {
     return;
   }
 
@@ -448,25 +507,63 @@ async function runProbeCurrentFilter() {
   try {
     const payload = await fetchJSON('/v1/admin/quota/probe', {
       method: 'POST',
-      body: JSON.stringify({ jwts: rows.map((row) => row.jwt) }),
+      body: JSON.stringify({ jwts }),
     });
-
-    for (const item of payload.results || []) {
-      state.probeOverlay.set(item.jwt, {
-        ...item,
-        checked_at: payload.checked_at,
-      });
-    }
-    pushLog(`实时核验完成：${rows.length} 条`);
+    applyProbePayload(payload);
+    pushLog(`${successLabel}：${jwts.length} 条`);
   } catch (error) {
     if (error.status === 401) {
       window.location.replace('/admin/login');
       return;
     }
-    pushLog(`实时核验失败：${error.message}`, true);
+    pushLog(`额度核验失败：${error.message}`, true);
   } finally {
     state.probing = false;
     renderQuotaTable();
+  }
+}
+
+async function runProbeCurrentPage() {
+  const rows = getFilteredRows();
+  const { pagedRows } = getPaginationState(rows);
+  await runProbeForJWTs(pagedRows.map((row) => row.jwt), '当前页核验完成');
+}
+
+async function runProbeCustomLimit() {
+  const rows = getFilteredRows();
+  const limit = Math.min(toPositiveInt(state.probeLimit, state.pagination.pageSize), rows.length);
+  await runProbeForJWTs(rows.slice(0, limit).map((row) => row.jwt), `前 ${limit} 条核验完成`);
+}
+
+async function runProbeSingle(jwt) {
+  await runProbeForJWTs([jwt], '单个核验完成');
+}
+window.runProbeSingle = runProbeSingle;
+
+async function runFill() {
+  if (state.filling) {
+    return;
+  }
+
+  const count = toPositiveInt(state.fillCount, 30);
+  state.filling = true;
+  renderQuotaTableTools();
+  try {
+    const payload = await fetchJSON('/v1/admin/pool/fill', {
+      method: 'POST',
+      body: JSON.stringify({ count }),
+    });
+    pushLog(`补号任务已启动：requested=${payload.requested || count} task=${payload.task_id || 'unknown'}`);
+    await refreshAll();
+  } catch (error) {
+    if (error.status === 401) {
+      window.location.replace('/admin/login');
+      return;
+    }
+    pushLog(`启动补号失败：${error.message}`, true);
+  } finally {
+    state.filling = false;
+    renderQuotaTableTools();
   }
 }
 

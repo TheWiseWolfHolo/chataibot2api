@@ -70,6 +70,24 @@ func (a *App) AdminQuotaSnapshot() AdminQuotaSnapshot {
 	if a != nil && a.pool != nil {
 		rows = append(rows, a.pool.AdminQuotaRows()...)
 	}
+	if len(rows) == 0 && a != nil && a.pool != nil {
+		exported := a.pool.ExportAccounts()
+		if len(exported) > 0 {
+			rows = make([]AdminQuotaRow, 0, len(exported))
+			for _, account := range exported {
+				jwt := strings.TrimSpace(account.JWT)
+				if jwt == "" {
+					continue
+				}
+				rows = append(rows, AdminQuotaRow{
+					JWT:        jwt,
+					Quota:      account.Quota,
+					Status:     deriveAdminQuotaStatus(account.Quota),
+					PoolBucket: "persisted",
+				})
+			}
+		}
+	}
 
 	for i := range rows {
 		rows[i].Status = deriveAdminQuotaStatus(rows[i].Quota)

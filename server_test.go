@@ -1349,6 +1349,49 @@ func TestAdminQuotaSnapshotEndpointReturnsSummaryAndRows(t *testing.T) {
 	}
 }
 
+func TestAdminQuotaSnapshotFallsBackToExportedAccountsWhenRowsAreEmpty(t *testing.T) {
+	t.Helper()
+
+	pool, _, handler := newTestHandler()
+	pool.adminRows = nil
+	pool.exported = []ExportedAccount{
+		{JWT: "jwt-export-low", Quota: 4},
+		{JWT: "jwt-export-healthy", Quota: 22},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/quota/snapshot", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload AdminQuotaSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("expected valid fallback snapshot payload, got err=%v body=%s", err, rec.Body.String())
+	}
+	if payload.Summary.TotalCount != 2 {
+		t.Fatalf("expected fallback total_count=2, got %+v", payload.Summary)
+	}
+	if payload.Summary.TotalQuota != 26 {
+		t.Fatalf("expected fallback total_quota=26, got %+v", payload.Summary)
+	}
+	if len(payload.Rows) != 2 {
+		t.Fatalf("expected 2 fallback rows, got %+v", payload.Rows)
+	}
+	if payload.Rows[0].JWT != "jwt-export-low" || payload.Rows[0].Status != "near-empty" {
+		t.Fatalf("expected low export row first, got %+v", payload.Rows)
+	}
+	if payload.Rows[0].PoolBucket != "persisted" {
+		t.Fatalf("expected fallback pool bucket persisted, got %+v", payload.Rows[0])
+	}
+	if payload.Rows[1].JWT != "jwt-export-healthy" || payload.Rows[1].Status != "healthy" {
+		t.Fatalf("expected healthy export row second, got %+v", payload.Rows)
+	}
+}
+
 func TestAdminQuotaProbeEndpointIsReadOnlyAndReturnsRowResults(t *testing.T) {
 	t.Helper()
 
@@ -1548,8 +1591,23 @@ func TestAdminDashboardAssetContainsQuotaEndpoints(t *testing.T) {
 	if !strings.Contains(body, "/v1/admin/quota/probe") {
 		t.Fatalf("expected probe endpoint usage, got %s", body)
 	}
+	if !strings.Contains(body, "/v1/admin/pool/fill") {
+		t.Fatalf("expected fill endpoint usage, got %s", body)
+	}
 	if !strings.Contains(body, "toggleJwtVisibility") {
 		t.Fatalf("expected JWT expand behavior, got %s", body)
+	}
+	if !strings.Contains(body, "runProbeCurrentPage") {
+		t.Fatalf("expected current-page probe behavior, got %s", body)
+	}
+	if !strings.Contains(body, "runProbeCustomLimit") {
+		t.Fatalf("expected custom-limit probe behavior, got %s", body)
+	}
+	if !strings.Contains(body, "runProbeSingle") {
+		t.Fatalf("expected single-row probe behavior, got %s", body)
+	}
+	if !strings.Contains(body, "runFill") {
+		t.Fatalf("expected fill action behavior, got %s", body)
 	}
 }
 
