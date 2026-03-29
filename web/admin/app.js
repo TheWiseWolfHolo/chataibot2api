@@ -39,6 +39,10 @@ const state = {
     query: '',
     sort: 'status-asc-quota-asc',
   },
+  pagination: {
+    page: 1,
+    pageSize: 30,
+  },
   logs: [],
   refreshing: false,
   probing: false,
@@ -300,6 +304,15 @@ function renderQuotaTableTools() {
           <option value="updated-desc">按最近更新时间</option>
         </select>
       </label>
+      <label class="field" style="min-width: 140px;">
+        <span>每页</span>
+        <select id="pageSizeSelect">
+          <option value="30">30</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+      </label>
       <button type="button" class="button primary" id="probeBtn" ${disabled}>${state.probing ? '核验中' : `实时核验当前筛选 (${rows.length})`}</button>
     </div>
   `;
@@ -307,21 +320,31 @@ function renderQuotaTableTools() {
   document.getElementById('statusFilter').value = state.filters.status;
   document.getElementById('bucketFilter').value = state.filters.bucket;
   document.getElementById('sortSelect').value = state.filters.sort;
+  document.getElementById('pageSizeSelect').value = String(state.pagination.pageSize);
 
   document.getElementById('statusFilter')?.addEventListener('change', (event) => {
     state.filters.status = event.target.value;
+    state.pagination.page = 1;
     renderQuotaTable();
   });
   document.getElementById('bucketFilter')?.addEventListener('change', (event) => {
     state.filters.bucket = event.target.value;
+    state.pagination.page = 1;
     renderQuotaTable();
   });
   document.getElementById('queryInput')?.addEventListener('input', (event) => {
     state.filters.query = event.target.value;
+    state.pagination.page = 1;
     renderQuotaTable();
   });
   document.getElementById('sortSelect')?.addEventListener('change', (event) => {
     state.filters.sort = event.target.value;
+    state.pagination.page = 1;
+    renderQuotaTable();
+  });
+  document.getElementById('pageSizeSelect')?.addEventListener('change', (event) => {
+    state.pagination.pageSize = Number(event.target.value || 30);
+    state.pagination.page = 1;
     renderQuotaTable();
   });
   document.getElementById('probeBtn')?.addEventListener('click', runProbeCurrentFilter);
@@ -330,9 +353,18 @@ function renderQuotaTableTools() {
 function renderQuotaTable() {
   renderQuotaTableTools();
   const rows = getFilteredRows();
+  const totalPages = Math.max(1, Math.ceil(rows.length / state.pagination.pageSize));
+  if (state.pagination.page > totalPages) {
+    state.pagination.page = totalPages;
+  }
+  if (state.pagination.page < 1) {
+    state.pagination.page = 1;
+  }
+  const startIndex = (state.pagination.page - 1) * state.pagination.pageSize;
+  const pagedRows = rows.slice(startIndex, startIndex + state.pagination.pageSize);
   probeState.textContent = state.probing
     ? '正在核验当前筛选结果'
-    : `当前筛选 ${rows.length} 条；总览仍基于缓存快照`;
+    : `当前筛选 ${rows.length} 条；第 ${state.pagination.page} / ${totalPages} 页；总览仍基于缓存快照`;
 
   if (!rows.length) {
     quotaTableWrap.innerHTML = '<div class="data-item"><strong>结果</strong><span>当前筛选没有匹配账号</span></div>';
@@ -352,7 +384,7 @@ function renderQuotaTable() {
           </tr>
         </thead>
         <tbody>
-          ${rows.map((row) => {
+          ${pagedRows.map((row) => {
             const expanded = state.expandedJWTs.has(row.jwt);
             const statusTone = toneForStatus(row.status);
             const statusLabel = STATUS_LABELS[row.status] || row.status || '未知';
@@ -377,7 +409,32 @@ function renderQuotaTable() {
         </tbody>
       </table>
     </div>
+    <div class="action-row quota-pagination" style="margin-top: 16px; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+      <div class="strip">
+        ${pill(`当前显示 ${startIndex + 1}-${Math.min(startIndex + pagedRows.length, rows.length)}`)}
+        ${pill(`总计 ${rows.length} 条`)}
+      </div>
+      <div class="action-row" style="gap: 10px;">
+        <button type="button" class="button ghost" id="prevPageBtn" ${state.pagination.page <= 1 ? 'disabled' : ''}>上一页</button>
+        <button type="button" class="button ghost" id="nextPageBtn" ${state.pagination.page >= totalPages ? 'disabled' : ''}>下一页</button>
+      </div>
+    </div>
   `;
+
+  document.getElementById('prevPageBtn')?.addEventListener('click', () => {
+    if (state.pagination.page <= 1) {
+      return;
+    }
+    state.pagination.page -= 1;
+    renderQuotaTable();
+  });
+  document.getElementById('nextPageBtn')?.addEventListener('click', () => {
+    if (state.pagination.page >= totalPages) {
+      return;
+    }
+    state.pagination.page += 1;
+    renderQuotaTable();
+  });
 }
 
 async function runProbeCurrentFilter() {

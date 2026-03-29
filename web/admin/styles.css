@@ -464,6 +464,10 @@ body::before {
 }
 
 .fold-panel > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   cursor: pointer;
   list-style: none;
   padding: 20px 24px;
@@ -479,7 +483,7 @@ body::before {
 
 .fold-panel > summary::after {
   content: "+";
-  float: right;
+  margin-left: auto;
   font-size: 1.35rem;
   line-height: 1;
 }
@@ -490,6 +494,29 @@ body::before {
 
 .fold-panel[open] > div {
   padding: 0 24px 24px;
+}
+
+.fold-summary-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.fold-summary-copy .eyebrow {
+  margin: 0;
+}
+
+.fold-summary-title {
+  font-size: 1.32rem;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  text-transform: uppercase;
+}
+
+.fold-summary-note {
+  font-size: 0.92rem;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .button.wide {

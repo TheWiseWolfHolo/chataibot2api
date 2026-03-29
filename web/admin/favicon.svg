@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="holo-image-api favicon">
+  <rect width="64" height="64" fill="#fffdf5"/>
+  <rect x="6" y="6" width="52" height="52" rx="2" fill="#ffd93d" stroke="#000000" stroke-width="4"/>
+  <path d="M18 16h10v12h8V16h10v32H36V36h-8v12H18z" fill="#000000"/>
+  <rect x="42" y="10" width="14" height="14" fill="#ff6b6b" stroke="#000000" stroke-width="4"/>
+</svg>

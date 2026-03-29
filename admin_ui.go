@@ -50,5 +50,6 @@ func serveAdminHTML(w http.ResponseWriter, assetPath string) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	_, _ = w.Write(payload)
 }

@@ -7,7 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/admin/assets/styles.css" />
+  <link rel="icon" type="image/svg+xml" href="/admin/assets/favicon.svg?v=20260330-admin-ui-1" />
+  <link rel="stylesheet" href="/admin/assets/styles.css?v=20260330-admin-ui-1" />
 </head>
 <body class="admin-body">
   <div class="page-decor" aria-hidden="true">
@@ -45,19 +46,21 @@
         <div id="statusGrid" hidden></div>
       </section>
 
-      <section class="surface table-surface" id="quotaTableSection">
-        <div class="section-head compact-head">
-          <div>
-            <p class="eyebrow">DETAIL</p>
-            <h2>号池明细</h2>
+      <details class="surface fold-panel table-surface" id="quotaTableSection" open>
+        <summary>
+          <div class="fold-summary-copy">
+            <span class="eyebrow">DETAIL</span>
+            <strong class="fold-summary-title">号池明细</strong>
           </div>
-          <p class="section-note" id="probeState">默认展示缓存额度</p>
+          <span class="fold-summary-note" id="probeState">默认展示缓存额度</span>
+        </summary>
+        <div>
+          <div id="quotaTableTools"></div>
+          <div id="quotaTableWrap"></div>
+          <div id="poolSection" hidden></div>
+          <div id="actionsSection" hidden></div>
         </div>
-        <div id="quotaTableTools"></div>
-        <div id="quotaTableWrap"></div>
-        <div id="poolSection" hidden></div>
-        <div id="actionsSection" hidden></div>
-      </section>
+      </details>
 
       <details class="surface fold-panel" id="modelsFold">
         <summary>模型支持</summary>
@@ -81,6 +84,6 @@
     </main>
   </div>
 
-  <script src="/admin/assets/app.js"></script>
+  <script src="/admin/assets/app.js?v=20260330-admin-ui-1"></script>
 </body>
 </html>
