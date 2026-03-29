@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
+
+const syntheticStreamChunkGap = 24 * time.Millisecond
 
 func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletionRequest) {
 	if req.Stream {
@@ -202,7 +205,8 @@ func (s *openAITextStreamWriter) WriteDelta(content string) error {
 	s.start()
 	s.wroteContent = true
 
-	for _, piece := range splitTextStreamDelta(content) {
+	pieces := splitTextStreamDelta(content)
+	for index, piece := range pieces {
 		if piece == "" {
 			continue
 		}
@@ -228,6 +232,9 @@ func (s *openAITextStreamWriter) WriteDelta(content string) error {
 			return err
 		}
 		s.flush()
+		if len(pieces) > 1 && index < len(pieces)-1 {
+			time.Sleep(syntheticStreamChunkGap)
+		}
 	}
 	return nil
 }
