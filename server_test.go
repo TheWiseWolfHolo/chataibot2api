@@ -17,11 +17,13 @@ type fakePool struct {
 	released        *Account
 	status          PoolStatus
 	exported        []ExportedAccount
+	adminRows       []AdminQuotaRow
 	fillTask        FillTaskSnapshot
 	pruneResult     PruneSummary
 	importResult    ImportPoolResult
 	imported        []*Account
 	fillCounts      []int
+	pruneCalls      int
 }
 
 func (f *fakePool) Acquire(cost int) *Account {
@@ -54,6 +56,7 @@ func (f *fakePool) StartFillTask(count int) FillTaskSnapshot {
 }
 
 func (f *fakePool) Prune() PruneSummary {
+	f.pruneCalls++
 	return f.pruneResult
 }
 
@@ -239,6 +242,17 @@ func (f *fakeBackend) GetCount(jwtToken string) (int, error) {
 	return 65, nil
 }
 
+type fakePoolManager struct {
+	*fakePool
+}
+
+func (f *fakePoolManager) AdminQuotaRows() []AdminQuotaRow {
+	if f == nil || f.fakePool == nil {
+		return nil
+	}
+	return append([]AdminQuotaRow(nil), f.adminRows...)
+}
+
 func newTestHandler() (*fakePool, *fakeBackend, http.Handler) {
 	return newTestHandlerWithLegacyBaseURL("https://holo-image-api.zeabur.app")
 }
@@ -257,7 +271,7 @@ func newTestHandlerWithLegacyBaseURL(legacyBaseURL string) (*fakePool, *fakeBack
 		PrimaryPublicBaseURL:    "https://holo-image-api.zeabur.app",
 		LegacyPoolExportBaseURL: legacyBaseURL,
 	}
-	app := NewApp(pool, backend, cfg, func() time.Time {
+	app := NewApp(&fakePoolManager{fakePool: pool}, backend, cfg, func() time.Time {
 		return time.Unix(1_700_000_000, 0)
 	})
 	handler := NewServerHandler(cfg, app)
@@ -1276,6 +1290,122 @@ func TestAdminPoolExportRequiresAdminTokenAndReturnsSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"jwt":"jwt-1"`) || !strings.Contains(rec.Body.String(), `"jwt":"jwt-2"`) {
 		t.Fatalf("expected exported jwts in response, got %s", rec.Body.String())
+	}
+}
+
+func TestAdminQuotaSnapshotEndpointReturnsSummaryAndRows(t *testing.T) {
+	t.Helper()
+
+	pool, _, handler := newTestHandler()
+	pool.adminRows = []AdminQuotaRow{
+		{JWT: "jwt-healthy", Quota: 16, Status: "healthy", PoolBucket: "ready"},
+		{JWT: "jwt-low", Quota: 7, Status: "low", PoolBucket: "reusable"},
+		{JWT: "jwt-near", Quota: 3, Status: "near-empty", PoolBucket: "borrowed"},
+	}
+
+	unauthReq := httptest.NewRequest(http.MethodGet, "/v1/admin/quota/snapshot", nil)
+	unauthRec := httptest.NewRecorder()
+	handler.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized snapshot status, got %d body=%s", unauthRec.Code, unauthRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/quota/snapshot", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload AdminQuotaSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("expected valid snapshot payload, got err=%v body=%s", err, rec.Body.String())
+	}
+	if payload.Summary.TotalCount != 3 {
+		t.Fatalf("expected total_count=3, got %+v", payload.Summary)
+	}
+	if payload.Summary.TotalQuota != 26 {
+		t.Fatalf("expected total_quota=26, got %+v", payload.Summary)
+	}
+	if payload.Summary.LowQuotaCount != 2 {
+		t.Fatalf("expected low_quota_count=2, got %+v", payload.Summary)
+	}
+	if payload.Summary.NearEmptyCount != 1 {
+		t.Fatalf("expected near_empty_count=1, got %+v", payload.Summary)
+	}
+	if len(payload.Rows) != 3 {
+		t.Fatalf("expected 3 rows, got %+v", payload.Rows)
+	}
+	if payload.Rows[0].JWT != "jwt-near" || payload.Rows[0].PoolBucket != "borrowed" || payload.Rows[0].Status != "near-empty" {
+		t.Fatalf("expected near-empty row first, got %+v", payload.Rows)
+	}
+	if payload.Rows[1].JWT != "jwt-low" || payload.Rows[1].PoolBucket != "reusable" || payload.Rows[1].Status != "low" {
+		t.Fatalf("expected low row second, got %+v", payload.Rows)
+	}
+	if payload.Rows[2].JWT != "jwt-healthy" || payload.Rows[2].PoolBucket != "ready" || payload.Rows[2].Status != "healthy" {
+		t.Fatalf("expected healthy row last, got %+v", payload.Rows)
+	}
+}
+
+func TestAdminQuotaProbeEndpointIsReadOnlyAndReturnsRowResults(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	backend.quotaByJWT = map[string]int{
+		"jwt-a": 12,
+		"jwt-b": 4,
+	}
+
+	unauthReq := httptest.NewRequest(http.MethodPost, "/v1/admin/quota/probe", strings.NewReader(`{"jwts":["jwt-a"]}`))
+	unauthReq.Header.Set("Content-Type", "application/json")
+	unauthRec := httptest.NewRecorder()
+	handler.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized probe status, got %d body=%s", unauthRec.Code, unauthRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/quota/probe", strings.NewReader(`{"jwts":[" jwt-a ","","jwt-b","jwt-a"]}`))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload AdminQuotaProbeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("expected valid probe payload, got err=%v body=%s", err, rec.Body.String())
+	}
+	if len(backend.getCountCalls) != 2 {
+		t.Fatalf("expected 2 quota calls, got %v", backend.getCountCalls)
+	}
+	if backend.getCountCalls[0] != "jwt-a" || backend.getCountCalls[1] != "jwt-b" {
+		t.Fatalf("expected trimmed and deduped quota calls, got %v", backend.getCountCalls)
+	}
+	if pool.pruneCalls != 0 {
+		t.Fatalf("probe must not call prune, got %d", pool.pruneCalls)
+	}
+	if len(pool.fillCounts) != 0 {
+		t.Fatalf("probe must not call fill, got %v", pool.fillCounts)
+	}
+	if len(pool.imported) != 0 {
+		t.Fatalf("probe must not import, got %+v", pool.imported)
+	}
+	expectedCheckedAt := time.Unix(1_700_000_000, 0).UTC()
+	if !payload.CheckedAt.Equal(expectedCheckedAt) {
+		t.Fatalf("expected checked_at=%s, got %+v", expectedCheckedAt, payload.CheckedAt)
+	}
+	if len(payload.Results) != 2 {
+		t.Fatalf("expected 2 probe results, got %+v", payload.Results)
+	}
+	if !payload.Results[0].OK || payload.Results[0].JWT != "jwt-a" || payload.Results[0].Quota != 12 || payload.Results[0].Status != "healthy" {
+		t.Fatalf("expected first probe result for jwt-a, got %+v", payload.Results)
+	}
+	if !payload.Results[1].OK || payload.Results[1].JWT != "jwt-b" || payload.Results[1].Quota != 4 || payload.Results[1].Status != "near-empty" {
+		t.Fatalf("expected second probe result for jwt-b, got %+v", payload.Results)
 	}
 }
 

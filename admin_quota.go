@@ -1,6 +1,10 @@
 package main
 
-import "time"
+import (
+	"sort"
+	"strings"
+	"time"
+)
 
 type AdminQuotaRow struct {
 	JWT           string     `json:"jwt"`
@@ -43,5 +47,111 @@ func deriveAdminQuotaStatus(quota int) string {
 		return "low"
 	default:
 		return "healthy"
+	}
+}
+
+func adminQuotaStatusOrder(status string) int {
+	switch strings.TrimSpace(status) {
+	case "near-empty":
+		return 0
+	case "low":
+		return 1
+	case "healthy":
+		return 2
+	case "probe-error":
+		return 3
+	default:
+		return 4
+	}
+}
+
+func (a *App) AdminQuotaSnapshot() AdminQuotaSnapshot {
+	rows := make([]AdminQuotaRow, 0)
+	if a != nil && a.pool != nil {
+		rows = append(rows, a.pool.AdminQuotaRows()...)
+	}
+
+	for i := range rows {
+		rows[i].Status = deriveAdminQuotaStatus(rows[i].Quota)
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		left := adminQuotaStatusOrder(rows[i].Status)
+		right := adminQuotaStatusOrder(rows[j].Status)
+		if left != right {
+			return left < right
+		}
+		if rows[i].Quota != rows[j].Quota {
+			return rows[i].Quota < rows[j].Quota
+		}
+		return rows[i].JWT < rows[j].JWT
+	})
+
+	summary := AdminQuotaSummary{}
+	for _, row := range rows {
+		summary.TotalCount++
+		summary.TotalQuota += row.Quota
+		if row.Quota >= 2 && row.Quota < lowQuotaThreshold {
+			summary.LowQuotaCount++
+		}
+		if row.Quota < 5 {
+			summary.NearEmptyCount++
+		}
+	}
+
+	return AdminQuotaSnapshot{
+		Summary: summary,
+		Rows:    rows,
+	}
+}
+
+func (a *App) ProbeQuota(jwts []string) AdminQuotaProbeResponse {
+	checkedAt := time.Now().UTC()
+	if a != nil && a.now != nil {
+		checkedAt = a.now().UTC()
+	}
+
+	results := make([]AdminQuotaProbeItem, 0, len(jwts))
+	seen := make(map[string]struct{}, len(jwts))
+	for _, raw := range jwts {
+		jwt := strings.TrimSpace(raw)
+		if jwt == "" {
+			continue
+		}
+		if _, ok := seen[jwt]; ok {
+			continue
+		}
+		seen[jwt] = struct{}{}
+
+		if a == nil || a.backend == nil {
+			results = append(results, AdminQuotaProbeItem{
+				JWT:   jwt,
+				OK:    false,
+				Error: "backend is not configured",
+			})
+			continue
+		}
+
+		quota, err := a.backend.GetCount(jwt)
+		if err != nil {
+			results = append(results, AdminQuotaProbeItem{
+				JWT:   jwt,
+				OK:    false,
+				Error: err.Error(),
+			})
+			continue
+		}
+
+		results = append(results, AdminQuotaProbeItem{
+			JWT:    jwt,
+			Quota:  quota,
+			Status: deriveAdminQuotaStatus(quota),
+			OK:     true,
+		})
+	}
+
+	return AdminQuotaProbeResponse{
+		CheckedAt: checkedAt,
+		Results:   results,
 	}
 }

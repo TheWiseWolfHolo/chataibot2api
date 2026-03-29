@@ -36,6 +36,8 @@ func NewServerHandler(cfg Config, app *App) http.Handler {
 	mux.Handle("/v1/admin/pool/import", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolImport)))
 	mux.Handle("/v1/admin/pool/prune", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolPrune)))
 	mux.Handle("/v1/admin/pool/export", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolExport)))
+	mux.Handle("/v1/admin/quota/snapshot", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminQuotaSnapshot)))
+	mux.Handle("/v1/admin/quota/probe", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminQuotaProbe)))
 	mux.Handle("/v1/admin/meta", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminMeta)))
 	mux.Handle("/v1/admin/catalog", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminCatalog)))
 	mux.Handle("/v1/admin/migration/status", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminMigrationStatus)))
@@ -222,6 +224,32 @@ func (a *App) HandleAdminPoolExport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accounts": a.pool.ExportAccounts(),
 	})
+}
+
+func (a *App) HandleAdminQuotaSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, a.AdminQuotaSnapshot())
+}
+
+func (a *App) HandleAdminQuotaProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		JWTs []string `json:"jwts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "Request body must be valid JSON", "invalid_request_error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, a.ProbeQuota(body.JWTs))
 }
 
 func (a *App) HandleAdminMeta(w http.ResponseWriter, r *http.Request) {
