@@ -20,13 +20,13 @@ type APIClient interface {
 	SendTextMessage(req UpstreamTextMessageRequest, jwtToken string) (TextCompletionResult, error)
 	StreamTextMessage(req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error)
 	GetCount(jwtToken string) int
-	SendRegisterRequest(email string) bool
-	VerifyAccount(email, code string) string
+	SendRegisterRequest(email string) error
+	VerifyAccount(email, code string) (string, error)
 }
 
 type MailClient interface {
-	NewMail() string
-	FetchAndExtractCode(address string) (bool, string)
+	NewMail() (string, error)
+	FetchAndExtractCode(address string) (bool, string, error)
 }
 
 var mailCFClient MailClient
@@ -62,16 +62,17 @@ type ModelConfig struct {
 	EditCost  int
 	MergeMode string
 	MergeCost int
+	Hidden    bool
 }
 
 var modelRouter = map[string]ModelConfig{
 	"gpt-image-1.5":          {Provider: "GPT_IMAGE_1_5", Version: "", Cost: 12, EditMode: "edit_gpt_1_5", EditCost: 12, MergeMode: "merge_gpt_1_5", MergeCost: 12},
 	"gpt-image-1.5-high":     {Provider: "GPT_IMAGE_1_5_HIGH", Version: "", Cost: 40, EditMode: "edit_gpt_1_5_high", EditCost: 40, MergeMode: "merge_gpt_1_5_high", MergeCost: 40},
 	"ideogram":               {Provider: "IDEOGRAM", Version: "", Cost: 8},
-	"google-nano-banana-pro": {Provider: "GOOGLE", Version: "nano-banana-pro", Cost: 60, EditMode: "edit_google_nano_banana_pro", EditCost: 60, MergeMode: "merge_google_nano_banana_pro", MergeCost: 60},
+	"google-nano-banana-pro": {Provider: "GOOGLE", Version: "nano-banana-pro", Cost: 60, EditMode: "edit_google_nano_banana_pro", EditCost: 60, MergeMode: "merge_google_nano_banana_pro", MergeCost: 60, Hidden: true},
 	"google-nano-banana":     {Provider: "GOOGLE", Version: "nano-banana", Cost: 15, EditMode: "edit_google_nano_banana", EditCost: 15, MergeMode: "merge_google_nano_banana", MergeCost: 15},
-	"google-nano-banana-2":   {Provider: "GOOGLE", Version: "nano-banana-2", Cost: 30, EditMode: "edit_google_nano_banana_2", EditCost: 30, MergeMode: "merge_google_nano_banana_2", MergeCost: 30},
-	"midjourney-7":           {Provider: "MIDJOURNEY", Version: "7", Cost: 20},
+	"google-nano-banana-2":   {Provider: "GOOGLE", Version: "nano-banana-2", Cost: 30, EditMode: "edit_google_nano_banana_2", EditCost: 30, MergeMode: "merge_google_nano_banana_2", MergeCost: 30, Hidden: true},
+	"midjourney-7":           {Provider: "MIDJOURNEY", Version: "7", Cost: 20, Hidden: true},
 	"qwen-lora":              {Provider: "QWEN", Version: "lora", Cost: 2, EditMode: "edit_qwen_lora", EditCost: 2, MergeMode: "merge_qwen_lora", MergeCost: 2},
 	"bytedance-seedream":     {Provider: "BYTEDANCE", Version: "seedream-5-lite", Cost: 14},
 }
@@ -117,22 +118,21 @@ func parseRatio(size string) string {
 	}
 }
 
-func CreateAccount() (bool, string) {
+func CreateAccount() (string, error) {
 	if mailCFClient == nil {
-		fmt.Println("[-] cloudflare 邮箱客户端未初始化")
-		return false, ""
+		return "", fmt.Errorf("cloudflare 邮箱客户端未初始化")
 	}
 
-	email := mailCFClient.NewMail()
-	if email == "" {
-		fmt.Println("[-] 创建 cloudflare 邮箱失败")
-		return false, ""
+	email, err := mailCFClient.NewMail()
+	if err != nil {
+		return "", fmt.Errorf("创建 cloudflare 邮箱失败：%w", err)
 	}
+
+	registrationClient := api.NewAPIClient()
 
 	// 提交注册
-	if !apiClient.SendRegisterRequest(email) {
-		fmt.Println("[-] 提交注册失败")
-		return false, ""
+	if err := registrationClient.SendRegisterRequest(email); err != nil {
+		return "", fmt.Errorf("提交注册失败：%w", err)
 	}
 
 	// 获取邮件验证码
@@ -140,14 +140,15 @@ func CreateAccount() (bool, string) {
 	start := time.Now()
 	for {
 		if time.Since(start) > 60*time.Second {
-			fmt.Println("[-] 获取验证码超时")
-			return false, ""
+			return "", fmt.Errorf("获取验证码超时")
 		}
 
-		next, code := mailCFClient.FetchAndExtractCode(email)
+		next, code, err := mailCFClient.FetchAndExtractCode(email)
+		if err != nil {
+			return "", fmt.Errorf("获取验证码失败：%w", err)
+		}
 		if !next {
-			fmt.Println("[-] 获取验证码失败")
-			return false, ""
+			return "", fmt.Errorf("获取验证码失败")
 		}
 		if next && code != "" {
 			mailCode = code
@@ -158,9 +159,9 @@ func CreateAccount() (bool, string) {
 	}
 
 	// 提交验证码
-	jwtToken := apiClient.VerifyAccount(email, mailCode)
-	if jwtToken == "" {
-		return false, ""
+	jwtToken, err := registrationClient.VerifyAccount(email, mailCode)
+	if err != nil {
+		return "", fmt.Errorf("提交验证码失败：%w", err)
 	}
-	return true, jwtToken
+	return jwtToken, nil
 }

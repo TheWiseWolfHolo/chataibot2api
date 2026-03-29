@@ -34,8 +34,8 @@ type chatImageURL struct {
 }
 
 func isSupportedImageModel(model string) bool {
-	_, ok := modelRouter[strings.TrimSpace(model)]
-	return ok
+	cfg, ok := modelRouter[strings.TrimSpace(model)]
+	return ok && !cfg.Hidden
 }
 
 func (a *App) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {

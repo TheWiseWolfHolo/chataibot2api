@@ -10,9 +10,9 @@ func TestSimplePoolStartFillTaskCreatesAccountsAsynchronously(t *testing.T) {
 	t.Helper()
 
 	registerCalls := 0
-	pool := NewSimplePool(10, 0, func() (bool, string) {
+	pool := NewSimplePool(10, 0, func() (string, error) {
 		registerCalls++
-		return true, "jwt-fill-" + time.Now().Format("150405.000000")
+		return "jwt-fill-" + time.Now().Format("150405.000000"), nil
 	}, func(_ string) int {
 		return 65
 	})
@@ -46,8 +46,8 @@ func TestSimplePoolStartFillTaskCreatesAccountsAsynchronously(t *testing.T) {
 func TestSimplePoolPruneRemovesInvalidAccounts(t *testing.T) {
 	t.Helper()
 
-	pool := NewSimplePool(10, 0, func() (bool, string) {
-		return false, ""
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
 	}, func(jwt string) int {
 		if jwt == "dead" {
 			return 0
@@ -84,9 +84,9 @@ func TestSimplePoolAutoFillStopsAtTargetSize(t *testing.T) {
 	t.Helper()
 
 	registerCalls := 0
-	pool := NewSimplePoolWithOptions(4, 1, func() (bool, string) {
+	pool := NewSimplePoolWithOptions(4, 1, func() (string, error) {
 		registerCalls++
-		return true, fmt.Sprintf("jwt-%d", registerCalls)
+		return fmt.Sprintf("jwt-%d", registerCalls), nil
 	}, func(_ string) int {
 		return 65
 	}, PoolOptions{
@@ -116,9 +116,9 @@ func TestSimplePoolReleaseDropsInvalidAccountAndTriggersAutoRefill(t *testing.T)
 	t.Helper()
 
 	registerCalls := 0
-	pool := NewSimplePoolWithOptions(3, 1, func() (bool, string) {
+	pool := NewSimplePoolWithOptions(3, 1, func() (string, error) {
 		registerCalls++
-		return true, fmt.Sprintf("jwt-%d", registerCalls)
+		return fmt.Sprintf("jwt-%d", registerCalls), nil
 	}, func(jwt string) int {
 		if jwt == "dead" {
 			return 0
@@ -153,4 +153,116 @@ func TestSimplePoolReleaseDropsInvalidAccountAndTriggersAutoRefill(t *testing.T)
 	}
 
 	t.Fatalf("expected invalid release to trigger refill, latest status=%+v registerCalls=%d", pool.Status(), registerCalls)
+}
+
+func TestSimplePoolRegistrationLoopRespectsSuccessInterval(t *testing.T) {
+	t.Helper()
+
+	registerCalls := 0
+	_ = NewSimplePoolWithOptions(3, 1, func() (string, error) {
+		registerCalls++
+		return fmt.Sprintf("jwt-%d", registerCalls), nil
+	}, func(_ string) int {
+		return 65
+	}, PoolOptions{
+		RegistrationInterval: 250 * time.Millisecond,
+	})
+
+	time.Sleep(120 * time.Millisecond)
+	if registerCalls != 1 {
+		t.Fatalf("expected exactly one registration before success interval elapsed, got %d", registerCalls)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if registerCalls >= 2 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("expected registration loop to resume after success interval, got %d", registerCalls)
+}
+
+func TestSimplePoolRegistrationLoopRespectsFailureBackoff(t *testing.T) {
+	t.Helper()
+
+	registerCalls := 0
+	_ = NewSimplePoolWithOptions(3, 1, func() (string, error) {
+		registerCalls++
+		return "", fmt.Errorf("temporary failure")
+	}, func(_ string) int {
+		return 65
+	}, PoolOptions{
+		FailureBackoff: 250 * time.Millisecond,
+	})
+
+	time.Sleep(120 * time.Millisecond)
+	if registerCalls != 1 {
+		t.Fatalf("expected exactly one failed registration before failure backoff elapsed, got %d", registerCalls)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if registerCalls >= 2 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("expected registration loop to retry after failure backoff, got %d", registerCalls)
+}
+
+func TestSimplePoolRegistrationLoopUsesExponentialFailureBackoffAndTracksError(t *testing.T) {
+	t.Helper()
+
+	registerCalls := 0
+	pool := NewSimplePoolWithOptions(3, 1, func() (string, error) {
+		registerCalls++
+		return "", fmt.Errorf("Access denied: registration blocked temporarily for this IP.")
+	}, func(_ string) int {
+		return 65
+	}, PoolOptions{
+		FailureBackoff:    40 * time.Millisecond,
+		MaxFailureBackoff: 160 * time.Millisecond,
+	})
+
+	deadline := time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if registerCalls >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if registerCalls < 2 {
+		t.Fatalf("expected at least 2 registration attempts, got %d", registerCalls)
+	}
+
+	status := pool.Status()
+	if status.FailureStreak < 2 {
+		t.Fatalf("expected failure streak to be tracked, got %+v", status)
+	}
+	if status.LastRegistrationError == "" {
+		t.Fatalf("expected last registration error to be exposed, got %+v", status)
+	}
+	if status.NextRetryAt == nil || status.NextRetryAt.IsZero() {
+		t.Fatalf("expected next retry time to be exposed, got %+v", status)
+	}
+
+	firstSleepObservedAt := time.Now()
+	attemptsAfterTwo := registerCalls
+	time.Sleep(60 * time.Millisecond)
+	if registerCalls != attemptsAfterTwo {
+		t.Fatalf("expected exponential backoff to delay third attempt longer than base interval; attempts grew from %d to %d within %s", attemptsAfterTwo, registerCalls, time.Since(firstSleepObservedAt))
+	}
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if registerCalls >= 3 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected third attempt after exponential backoff, got %d", registerCalls)
 }

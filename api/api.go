@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"mime/multipart"
 	"net/http"
+	"net/http/cookiejar"
 	"strings"
 	"time"
 )
@@ -21,6 +22,13 @@ const (
 	specialChars   = "!@#$%^&*()-_+="
 
 	allPasswordChars = uppercaseChars + lowercaseChars + numberChars + specialChars
+
+	defaultWebBaseURL          = "https://chataibot.pro"
+	defaultAPIBaseURL          = defaultWebBaseURL + "/api"
+	defaultSignupPath          = "/app/auth/sign-up?variant=new"
+	defaultDistributionChannel = "web"
+	defaultAcceptLanguage      = "en"
+	defaultBrowserUserAgent    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 )
 
 type RegisterRequest struct {
@@ -62,46 +70,97 @@ type ChataibotEditImageResp struct {
 
 type APIClient struct {
 	httpClient *http.Client
+	webBaseURL string
+	apiBaseURL string
 }
 
 func NewAPIClient() *APIClient {
+	jar, _ := cookiejar.New(nil)
 	return &APIClient{
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		httpClient: &http.Client{
+			Timeout: 15 * time.Second,
+			Jar:     jar,
+		},
+		webBaseURL: defaultWebBaseURL,
+		apiBaseURL: defaultAPIBaseURL,
 	}
 }
 
+func (c *APIClient) signupURL() string {
+	return strings.TrimRight(c.webBaseURL, "/") + defaultSignupPath
+}
+
+func (c *APIClient) apiURL(path string) string {
+	base := strings.TrimRight(c.apiBaseURL, "/")
+	if strings.HasPrefix(path, "/") {
+		return base + path
+	}
+	return base + "/" + path
+}
+
+func (c *APIClient) applyCommonBrowserHeaders(req *http.Request) {
+	req.Header.Set("Accept-Language", defaultAcceptLanguage)
+	req.Header.Set("User-Agent", defaultBrowserUserAgent)
+	req.Header.Set("x-distribution-channel", defaultDistributionChannel)
+	req.Header.Set("Referer", c.signupURL())
+}
+
+func (c *APIClient) primeSignupSession() error {
+	req, err := http.NewRequest(http.MethodGet, c.signupURL(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", defaultBrowserUserAgent)
+	req.Header.Set("Accept-Language", defaultAcceptLanguage)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("signup preflight failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+}
+
 // SendRegisterRequest 发送注册请求
-func (c *APIClient) SendRegisterRequest(email string) bool {
-	url := "https://chataibot.pro/api/register"
+func (c *APIClient) SendRegisterRequest(email string) error {
+	if err := c.primeSignupSession(); err != nil {
+		return fmt.Errorf("预热注册会话失败：%w", err)
+	}
+
+	url := c.apiURL("/register")
 	password := generateSecurePassword(16)
 	payload := RegisterRequest{
 		Email:                 email,
 		Password:              password,
-		IsAdvertisingAccepted: false,
-		MainSiteUrl:           "https://chataibot.pro/api",
+		IsAdvertisingAccepted: true,
+		MainSiteUrl:           strings.TrimRight(c.apiBaseURL, "/"),
 		UtmSource:             "",
 		UtmCampaign:           "",
 		ConnectBusiness:       "",
-		YandexClientId:        "1774357327418729490",
+		YandexClientId:        "",
 	}
 	fmt.Printf("[*] 生成账号：%s，密码：%s\n", email, password)
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Println("[-] JSON 序列化失败：", err)
-		return false
+		return fmt.Errorf("JSON 序列化失败：%w", err)
 	}
 
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-	req.Header.Set("x-distribution-channel", "web")
+	c.applyCommonBrowserHeaders(req)
 
 	fmt.Printf("[*] 正在向目标网站注册账号：%s...\n", email)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		fmt.Println("[-] 请求发送失败：", err)
-		return false
+		return fmt.Errorf("请求发送失败：%w", err)
 	}
 	defer resp.Body.Close()
 
@@ -109,22 +168,20 @@ func (c *APIClient) SendRegisterRequest(email string) bool {
 
 	var regResp RegisterResponse
 	if err := json.Unmarshal(body, &regResp); err != nil {
-		fmt.Printf("[-] 解析响应失败(HTTP %d)：%s\n", resp.StatusCode, string(body))
-		return false
+		return fmt.Errorf("解析响应失败(HTTP %d)：%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	if regResp.Success {
 		fmt.Println("[+] 注册请求成功，等待验证码邮件...")
-		return true
+		return nil
 	}
 
-	fmt.Println("[-] 注册失败，服务器返回：", string(body))
-	return false
+	return fmt.Errorf("注册失败(HTTP %d)：%s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 // VerifyAccount 验证账号
-func (c *APIClient) VerifyAccount(email, code string) string {
-	url := "https://chataibot.pro/api/register/verify"
+func (c *APIClient) VerifyAccount(email, code string) (string, error) {
+	url := c.apiURL("/register/verify")
 	payload := VerifyRequest{
 		Email:           email,
 		Token:           code,
@@ -133,20 +190,17 @@ func (c *APIClient) VerifyAccount(email, code string) string {
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Println("[-] 验证请求序列化失败：", err)
-		return ""
+		return "", fmt.Errorf("验证请求序列化失败：%w", err)
 	}
 
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-	req.Header.Set("x-distribution-channel", "web")
+	c.applyCommonBrowserHeaders(req)
 
 	fmt.Printf("[*] 正在提交验证码 [%s] 激活账号...\n", code)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		fmt.Println("[-] 验证请求发送失败：", err)
-		return ""
+		return "", fmt.Errorf("验证请求发送失败：%w", err)
 	}
 	defer resp.Body.Close()
 
@@ -154,22 +208,20 @@ func (c *APIClient) VerifyAccount(email, code string) string {
 
 	var verifyResp VerifyResponse
 	if err := json.Unmarshal(body, &verifyResp); err != nil {
-		fmt.Printf("[-] 解析 JWT 失败(HTTP %d)：%s\n", resp.StatusCode, string(body))
-		return ""
+		return "", fmt.Errorf("解析 JWT 失败(HTTP %d)：%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	if verifyResp.JwtToken != "" {
 		fmt.Println("[+] 账号激活成功！成功获取 JWT Token！")
-		return verifyResp.JwtToken
+		return verifyResp.JwtToken, nil
 	}
 
-	fmt.Printf("[-] 验证失败(HTTP %d)，未返回 Token，服务器响应：%s\n", resp.StatusCode, string(body))
-	return ""
+	return "", fmt.Errorf("验证失败(HTTP %d)，未返回 Token，服务器响应：%s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 // UpdateUserSettings 更新用户设置
 func (c *APIClient) UpdateUserSettings(jwtToken, aspectRatio string) bool {
-	url := "https://chataibot.pro/api/user/update"
+	url := c.apiURL("/user/update")
 	payload := UpdateUserRequest{
 		Settings: map[string]string{
 			"imageAspectRatio": aspectRatio,
@@ -185,8 +237,8 @@ func (c *APIClient) UpdateUserSettings(jwtToken, aspectRatio string) bool {
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "token="+jwtToken)
-	req.Header.Set("x-distribution-channel", "web")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+	req.Header.Set("x-distribution-channel", defaultDistributionChannel)
+	req.Header.Set("User-Agent", defaultBrowserUserAgent)
 
 	fmt.Printf("[*] 正在设置图片比例为 [%s]...\n", aspectRatio)
 	resp, err := c.httpClient.Do(req)
@@ -207,11 +259,11 @@ func (c *APIClient) UpdateUserSettings(jwtToken, aspectRatio string) bool {
 
 // GetCount 获取剩余请求
 func (c *APIClient) GetCount(jwtToken string) int {
-	url := "https://chataibot.pro/api/user/answers-count/v2"
+	url := c.apiURL("/user/answers-count/v2")
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("Cookie", "token="+jwtToken)
-	req.Header.Set("x-distribution-channel", "web")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/146.0.0.0 Safari/537.36")
+	req.Header.Set("x-distribution-channel", defaultDistributionChannel)
+	req.Header.Set("User-Agent", defaultBrowserUserAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -234,7 +286,7 @@ func (c *APIClient) GetCount(jwtToken string) int {
 
 // GenerateImage 图片生成
 func (c *APIClient) GenerateImage(prompt, provider, version, jwtToken string) (string, error) {
-	url := "https://chataibot.pro/api/image/generate"
+	url := c.apiURL("/image/generate")
 	payload := map[string]any{
 		"text":            prompt,
 		"from":            1,
@@ -249,8 +301,8 @@ func (c *APIClient) GenerateImage(prompt, provider, version, jwtToken string) (s
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "token="+jwtToken)
-	req.Header.Set("x-distribution-channel", "web")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/146.0.0.0 Safari/537.36")
+	req.Header.Set("x-distribution-channel", defaultDistributionChannel)
+	req.Header.Set("User-Agent", defaultBrowserUserAgent)
 
 	slowClient := *c.httpClient
 	slowClient.Timeout = 5 * time.Minute
@@ -280,7 +332,7 @@ func (c *APIClient) GenerateImage(prompt, provider, version, jwtToken string) (s
 }
 
 func (c *APIClient) EditImage(prompt, base64Data, model, jwtToken string) (string, error) {
-	url := "https://chataibot.pro/api/file/recognize"
+	url := c.apiURL("/file/recognize")
 
 	b64Str := base64Data
 	fileName := "upload.png"
@@ -327,8 +379,8 @@ func (c *APIClient) EditImage(prompt, base64Data, model, jwtToken string) (strin
 	req, _ := http.NewRequest(http.MethodPost, url, bodyBuffer)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Cookie", "token="+jwtToken)
-	req.Header.Set("x-distribution-channel", "web")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/146.0.0.0 Safari/537.36")
+	req.Header.Set("x-distribution-channel", defaultDistributionChannel)
+	req.Header.Set("User-Agent", defaultBrowserUserAgent)
 
 	slowClient := *c.httpClient
 	slowClient.Timeout = 5 * time.Minute
@@ -359,7 +411,7 @@ func (c *APIClient) EditImage(prompt, base64Data, model, jwtToken string) (strin
 
 // MergeImage 发送多图合并请求
 func (c *APIClient) MergeImage(prompt string, base64Images []string, mergeType, jwtToken string) (string, error) {
-	url := "https://chataibot.pro/api/file/merge"
+	url := c.apiURL("/file/merge")
 
 	bodyBuffer := &bytes.Buffer{}
 	writer := multipart.NewWriter(bodyBuffer)
@@ -407,11 +459,11 @@ func (c *APIClient) MergeImage(prompt string, base64Images []string, mergeType, 
 	req, _ := http.NewRequest(http.MethodPost, url, bodyBuffer)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Cookie", "token="+jwtToken)
-	req.Header.Set("x-distribution-channel", "web")
+	req.Header.Set("x-distribution-channel", defaultDistributionChannel)
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Origin", "https://chataibot.pro")
-	req.Header.Set("Referer", "https://chataibot.pro/app/chat?chat_id=-2")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/146.0.0.0 Safari/537.36")
+	req.Header.Set("Origin", strings.TrimRight(c.webBaseURL, "/"))
+	req.Header.Set("Referer", strings.TrimRight(c.webBaseURL, "/")+"/app/chat?chat_id=-2")
+	req.Header.Set("User-Agent", defaultBrowserUserAgent)
 
 	slowClient := *c.httpClient
 	slowClient.Timeout = 5 * time.Minute

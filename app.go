@@ -59,7 +59,10 @@ func NewApp(pool PoolManager, backend ImageBackend, now func() time.Time) *App {
 
 func (a *App) Models() []string {
 	models := make([]string, 0, len(modelRouter)+len(textModelRouter))
-	for modelID := range modelRouter {
+	for modelID, cfg := range modelRouter {
+		if cfg.Hidden {
+			continue
+		}
 		models = append(models, modelID)
 	}
 	for modelID, cfg := range textModelRouter {
@@ -82,7 +85,7 @@ func (a *App) Generate(req OpenAIImageReq) (OpenAIImageResp, error) {
 	}
 
 	modelCfg, exists := modelRouter[req.Model]
-	if !exists {
+	if !exists || modelCfg.Hidden {
 		return OpenAIImageResp{}, newStatusError(http.StatusBadRequest, fmt.Sprintf("Unsupported model: %s", req.Model))
 	}
 

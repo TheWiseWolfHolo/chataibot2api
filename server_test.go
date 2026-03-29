@@ -299,8 +299,20 @@ func TestModelsEndpointListsSupportedModels(t *testing.T) {
 	if _, ok := modelIDs["gpt-4.1"]; !ok {
 		t.Fatalf("expected gpt-4.1 in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["gpt-4o-search-preview"]; !ok {
-		t.Fatalf("expected gpt-4o-search-preview in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["google-nano-banana"]; !ok {
+		t.Fatalf("expected google-nano-banana in model list, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["gpt-4o-search-preview"]; ok {
+		t.Fatalf("expected gated model gpt-4o-search-preview to be omitted, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["google-nano-banana-pro"]; ok {
+		t.Fatalf("expected gated model google-nano-banana-pro to be omitted, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["google-nano-banana-2"]; ok {
+		t.Fatalf("expected gated model google-nano-banana-2 to be omitted, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["midjourney-7"]; ok {
+		t.Fatalf("expected gated model midjourney-7 to be omitted, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["gpt-5.4-pro"]; ok {
 		t.Fatalf("expected hidden model gpt-5.4-pro to be omitted, got %+v", resp.Data)
@@ -379,7 +391,7 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 	}
 
 	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"google-nano-banana-2",
+		"model":"google-nano-banana",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -396,7 +408,7 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 	if mergeRecorder.Code != http.StatusOK {
 		t.Fatalf("expected merge status %d, got %d with body %s", http.StatusOK, mergeRecorder.Code, mergeRecorder.Body.String())
 	}
-	if backend.lastMerge != "merge_google_nano_banana_2" || len(backend.lastImages) != 2 {
+	if backend.lastMerge != "merge_google_nano_banana" || len(backend.lastImages) != 2 {
 		t.Fatalf("unexpected merge call mode=%q images=%v", backend.lastMerge, backend.lastImages)
 	}
 }
@@ -450,7 +462,7 @@ func TestChatCompletionsSupportsGptImage15EditAndMerge(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsSupportsNanoBananaProEditAndMerge(t *testing.T) {
+func TestChatCompletionsRejectsHiddenImageModelsAsUnsupported(t *testing.T) {
 	t.Helper()
 
 	_, backend, handler := newTestHandler()
@@ -469,33 +481,39 @@ func TestChatCompletionsSupportsNanoBananaProEditAndMerge(t *testing.T) {
 	editReq.Header.Set("Content-Type", "application/json")
 	editRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(editRecorder, editReq)
-	if editRecorder.Code != http.StatusOK {
-		t.Fatalf("expected edit status %d, got %d with body %s", http.StatusOK, editRecorder.Code, editRecorder.Body.String())
+	if editRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected hidden image model status %d, got %d with body %s", http.StatusBadRequest, editRecorder.Code, editRecorder.Body.String())
 	}
-	if backend.lastEditMode != "edit_google_nano_banana_pro" || backend.lastImage != "data:image/png;base64,abc" {
-		t.Fatalf("unexpected google-nano-banana-pro edit call mode=%q image=%q", backend.lastEditMode, backend.lastImage)
+	if !strings.Contains(editRecorder.Body.String(), "Unsupported model") {
+		t.Fatalf("expected unsupported model response for hidden image model, got %s", editRecorder.Body.String())
 	}
+	if backend.lastEditMode != "" || backend.lastMerge != "" {
+		t.Fatalf("expected hidden image model to be rejected before backend call, got edit=%q merge=%q", backend.lastEditMode, backend.lastMerge)
+	}
+}
 
-	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"google-nano-banana-pro",
-		"messages":[{
-			"role":"user",
-			"content":[
-				{"type":"text","text":"merge these"},
-				{"type":"image_url","image_url":{"url":"data:image/png;base64,aaa"}},
-				{"type":"image_url","image_url":{"url":"data:image/png;base64,bbb"}}
-			]
-		}]
+func TestImagesGenerationsRejectsHiddenImageModelsAsUnsupported(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"midjourney-7",
+		"prompt":"draw a hidden model probe"
 	}`))
-	mergeReq.Header.Set("Authorization", "Bearer api-token")
-	mergeReq.Header.Set("Content-Type", "application/json")
-	mergeRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(mergeRecorder, mergeReq)
-	if mergeRecorder.Code != http.StatusOK {
-		t.Fatalf("expected merge status %d, got %d with body %s", http.StatusOK, mergeRecorder.Code, mergeRecorder.Body.String())
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected hidden image model status %d, got %d with body %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
 	}
-	if backend.lastMerge != "merge_google_nano_banana_pro" || len(backend.lastImages) != 2 {
-		t.Fatalf("unexpected google-nano-banana-pro merge call mode=%q images=%v", backend.lastMerge, backend.lastImages)
+	if !strings.Contains(recorder.Body.String(), "Unsupported model") {
+		t.Fatalf("expected unsupported model response for hidden image generation, got %s", recorder.Body.String())
+	}
+	if backend.lastModel != "" {
+		t.Fatalf("expected hidden image model to be rejected before backend call, got model=%q", backend.lastModel)
 	}
 }
 
