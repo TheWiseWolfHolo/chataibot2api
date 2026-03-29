@@ -577,7 +577,12 @@ function modelTableRows(models, type) {
     if (type === 'text') {
       capabilities.push(item.internet ? modelCapabilityPill('联网', 'good') : modelCapabilityPill('标准'));
     } else {
-      capabilities.push(item.supports_edit ? modelCapabilityPill('图生图', 'good') : modelCapabilityPill('仅生图'));
+      if (item.edit_access === 'subscription-gated') {
+        capabilities.push(modelCapabilityPill('生图', 'good'));
+        capabilities.push(modelCapabilityPill('改图需会员', 'warn'));
+      } else {
+        capabilities.push(item.supports_edit ? modelCapabilityPill('图生图', 'good') : modelCapabilityPill('仅生图'));
+      }
       if (item.supports_merge) {
         capabilities.push(modelCapabilityPill('拼图', 'warn'));
       }

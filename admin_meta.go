@@ -48,6 +48,7 @@ type AdminModelInfo struct {
 	Internet      bool   `json:"internet,omitempty"`
 	SupportsEdit  bool   `json:"supports_edit,omitempty"`
 	SupportsMerge bool   `json:"supports_merge,omitempty"`
+	EditAccess    string `json:"edit_access,omitempty"`
 }
 
 func buildVersionString() string {

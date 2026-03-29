@@ -1567,6 +1567,9 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"gpt-image-1.5"`) {
 		t.Fatalf("expected image model in catalog, got %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"edit_access":"subscription-gated"`) {
+		t.Fatalf("expected subscription-gated edit access metadata, got %s", rec.Body.String())
+	}
 	if !strings.Contains(rec.Body.String(), `"low_quota_threshold":10`) {
 		t.Fatalf("expected low quota threshold metadata, got %s", rec.Body.String())
 	}
@@ -1647,6 +1650,9 @@ func TestAdminDashboardAssetContainsQuotaEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(body, "toggleJwtVisibility") {
 		t.Fatalf("expected JWT expand behavior, got %s", body)
+	}
+	if !strings.Contains(body, "edit_access") || !strings.Contains(body, "改图需会员") {
+		t.Fatalf("expected edit access gating in admin asset, got %s", body)
 	}
 	if !strings.Contains(body, "runProbeCurrentPage") {
 		t.Fatalf("expected current-page probe behavior, got %s", body)

@@ -133,6 +133,7 @@ func (a *App) AdminCatalog() AdminCatalog {
 			Category:      "image",
 			SupportsEdit:  strings.TrimSpace(cfg.EditMode) != "",
 			SupportsMerge: strings.TrimSpace(cfg.MergeMode) != "",
+			EditAccess:    imageEditAccess(modelID),
 		})
 	}
 	sort.Slice(catalog.ImageModels, func(i, j int) bool {
@@ -140,6 +141,15 @@ func (a *App) AdminCatalog() AdminCatalog {
 	})
 
 	return catalog
+}
+
+func imageEditAccess(modelID string) string {
+	switch strings.TrimSpace(modelID) {
+	case "gpt-image-1.5", "gpt-image-1.5-high":
+		return "subscription-gated"
+	default:
+		return ""
+	}
 }
 
 func (a *App) setMigrationStatus(status MigrationStatus) {
