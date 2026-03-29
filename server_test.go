@@ -1530,6 +1530,29 @@ func TestAdminUIRoutesServeLoginPageAndAssets(t *testing.T) {
 	}
 }
 
+func TestAdminDashboardAssetContainsQuotaEndpoints(t *testing.T) {
+	t.Helper()
+
+	_, _, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/admin/assets/app.js", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "/v1/admin/quota/snapshot") {
+		t.Fatalf("expected snapshot endpoint usage, got %s", body)
+	}
+	if !strings.Contains(body, "/v1/admin/quota/probe") {
+		t.Fatalf("expected probe endpoint usage, got %s", body)
+	}
+	if !strings.Contains(body, "toggleJwtVisibility") {
+		t.Fatalf("expected JWT expand behavior, got %s", body)
+	}
+}
+
 func TestAdminRequiresSessionAndRedirectsWhenMissing(t *testing.T) {
 	t.Helper()
 

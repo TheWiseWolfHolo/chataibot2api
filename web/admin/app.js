@@ -2,18 +2,46 @@ const refreshBtn = document.getElementById('refreshBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const refreshState = document.getElementById('refreshState');
 const topline = document.getElementById('topline');
-const statusGrid = document.getElementById('statusGrid');
-const poolSection = document.getElementById('poolSection');
+const quotaOverviewGrid = document.getElementById('quotaOverviewGrid');
+const quotaTableTools = document.getElementById('quotaTableTools');
+const quotaTableWrap = document.getElementById('quotaTableWrap');
+const probeState = document.getElementById('probeState');
 const modelsSection = document.getElementById('modelsSection');
 const migrationSection = document.getElementById('migrationSection');
-const actionsSection = document.getElementById('actionsSection');
 const dangerSection = document.getElementById('dangerSection');
 const logSection = document.getElementById('logSection');
 
+const STATUS_LABELS = {
+  'near-empty': '接近没额度',
+  low: '低余额',
+  healthy: '健康',
+  'probe-error': '核验失败',
+};
+
+const STATUS_ORDER = {
+  'near-empty': 0,
+  low: 1,
+  healthy: 2,
+  'probe-error': 3,
+};
+
 const state = {
+  session: null,
+  meta: null,
   snapshot: null,
+  catalog: null,
+  migration: null,
+  probeOverlay: new Map(),
+  expandedJWTs: new Set(),
+  filters: {
+    status: 'all',
+    bucket: 'all',
+    query: '',
+    sort: 'status-asc-quota-asc',
+  },
   logs: [],
   refreshing: false,
+  probing: false,
   bannerError: '',
 };
 
@@ -41,18 +69,10 @@ function formatDateTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false });
 }
 
-function shortValue(value) {
-  if (!value) {
-    return '—';
-  }
-  const text = String(value);
-  return text.length > 42 ? `${text.slice(0, 39)}...` : text;
-}
-
 function pushLog(message, isError = false) {
   const stamp = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   state.logs.unshift(`${stamp} · ${isError ? 'ERROR' : 'INFO'} · ${message}`);
-  state.logs = state.logs.slice(0, 14);
+  state.logs = state.logs.slice(0, 16);
   renderLogs();
 }
 
@@ -111,7 +131,7 @@ function metric(label, value, note = '') {
   return `
     <article class="metric">
       <span class="metric-label">${escapeHtml(label)}</span>
-      <span class="metric-value" title="${escapeHtml(value)}">${escapeHtml(shortValue(value))}</span>
+      <span class="metric-value">${escapeHtml(String(value))}</span>
       ${note ? `<span class="metric-note">${escapeHtml(note)}</span>` : ''}
     </article>
   `;
@@ -121,88 +141,291 @@ function pill(label, tone = '') {
   return `<span class="pill${tone ? ` ${tone}` : ''}">${escapeHtml(label)}</span>`;
 }
 
-function modelTag(model, note) {
-  return `
-    <span class="tag">
-      <strong>${escapeHtml(model)}</strong>
-      <small>${escapeHtml(note)}</small>
-    </span>
-  `;
-}
-
-function currentLastError(snapshot) {
-  const candidates = [
-    state.bannerError,
-    snapshot?.migration?.last_error,
-    snapshot?.pool?.last_registration_error,
-    snapshot?.pool?.last_persist_error,
-  ].filter(Boolean);
-  return candidates[0] || '无';
-}
-
-function renderStatus(snapshot) {
-  const { pool } = snapshot;
-  const refreshAt = formatDateTime(snapshot.refreshedAt);
-  const autoFillLabel = pool.auto_fill_active ? '自动补号运行中' : '自动补号空闲';
-  const persistedLabel = pool.persistence_enabled
-    ? `已持久化 ${formatCount(pool.persisted_count)}`
-    : '未启用持久化';
-
-  statusGrid.innerHTML = [
-    metric('当前总号数', formatCount(pool.total_count), persistedLabel),
-    metric('低余额号', formatCount(pool.low_quota_count), autoFillLabel),
-    metric('最后错误', currentLastError(snapshot), `最后刷新 ${refreshAt}`),
-  ].join('');
-
-  topline.textContent = '补号、清理、模型和日志都在一张作战面板。';
-
-  const tone = state.bannerError ? 'danger' : pool.auto_fill_active ? 'warn' : 'good';
-  setRefreshState(`最后刷新 ${refreshAt}`, tone);
-}
-
-function renderPool(snapshot) {
-  const { pool } = snapshot;
-  poolSection.innerHTML = `
-    <div class="data-grid">
-      <div class="data-item"><strong>总号数</strong><span>${formatCount(pool.total_count)}</span></div>
-      <div class="data-item"><strong>ready / reusable / borrowed</strong><span>${formatCount(pool.ready_count)} / ${formatCount(pool.reusable_count)} / ${formatCount(pool.borrowed_count)}</span></div>
-      <div class="data-item"><strong>目标池 / 低水位</strong><span>${formatCount(pool.target_count)} / ${formatCount(pool.low_watermark)}</span></div>
-      <div class="data-item"><strong>低余额号</strong><span>${formatCount(pool.low_quota_count)}</span></div>
-      <div class="data-item"><strong>正在注册</strong><span>${formatCount(pool.active_registrations)}</span></div>
-      <div class="data-item"><strong>注册失败累计</strong><span>${formatCount(pool.registration_failures)}</span></div>
-      <div class="data-item"><strong>本次启动恢复</strong><span>${formatCount(pool.restore_loaded)}</span><small>拒绝 ${formatCount(pool.restore_rejected)}</small></div>
-      <div class="data-item"><strong>上次恢复时间</strong><span class="value-compact">${formatDateTime(pool.last_restore_at)}</span></div>
-      <div class="data-item"><strong>上次落盘</strong><span class="value-compact">${formatDateTime(pool.last_persist_at)}</span></div>
-      <div class="data-item"><strong>持久化文件</strong><span class="value-compact">${escapeHtml(pool.persistence_path || '未配置')}</span></div>
-      <div class="data-item"><strong>prune 已删</strong><span>${formatCount(pool.prune_removed)}</span></div>
-      <div class="data-item"><strong>下次重试</strong><span>${formatDateTime(pool.next_retry_at)}</span></div>
-    </div>
-    <div class="strip">
-      ${pill(pool.persistence_enabled ? '已启用持久化' : '未启用持久化', pool.persistence_enabled ? 'good' : 'warn')}
-      ${pill(pool.auto_fill_active ? '自动补号运行中' : '自动补号空闲', pool.auto_fill_active ? 'warn' : 'good')}
-      ${pool.last_registration_error ? pill('存在注册报错', 'danger') : pill('最近无注册报错', 'good')}
-      ${pool.last_persist_error ? pill('存在落盘报错', 'danger') : pill('最近无落盘报错', 'good')}
-    </div>
-  `;
-}
-
-function capabilityPill(label, tone = '') {
+function modelCapabilityPill(label, tone = '') {
   return `<span class="pill${tone ? ` ${tone}` : ''}">${escapeHtml(label)}</span>`;
 }
 
+function toneForStatus(status) {
+  switch (status) {
+    case 'near-empty':
+      return 'danger';
+    case 'low':
+      return 'warn';
+    case 'probe-error':
+      return 'danger';
+    default:
+      return 'good';
+  }
+}
+
+function maskJWT(jwt) {
+  if (!jwt || jwt.length <= 18) {
+    return jwt || '—';
+  }
+  return `${jwt.slice(0, 8)}...${jwt.slice(-6)}`;
+}
+
+function toggleJwtVisibility(jwt) {
+  if (state.expandedJWTs.has(jwt)) {
+    state.expandedJWTs.delete(jwt);
+  } else {
+    state.expandedJWTs.add(jwt);
+  }
+  renderQuotaTable();
+}
+window.toggleJwtVisibility = toggleJwtVisibility;
+
+function effectiveRow(row) {
+  const overlay = state.probeOverlay.get(row.jwt);
+  if (!overlay) {
+    return { ...row, probeState: 'cached' };
+  }
+  if (!overlay.ok) {
+    return {
+      ...row,
+      probeState: 'error',
+      probeError: overlay.error,
+      last_checked_at: overlay.checked_at,
+      status: 'probe-error',
+    };
+  }
+  return {
+    ...row,
+    quota: overlay.quota,
+    status: overlay.status,
+    last_checked_at: overlay.checked_at,
+    probeState: 'live',
+  };
+}
+
+function allRows() {
+  return (state.snapshot?.rows || []).map((row) => effectiveRow(row));
+}
+
+function getFilteredRows() {
+  const query = state.filters.query.trim().toLowerCase();
+  const rows = allRows().filter((row) => {
+    if (state.filters.status !== 'all' && row.status !== state.filters.status) {
+      return false;
+    }
+    if (state.filters.bucket !== 'all' && row.pool_bucket !== state.filters.bucket) {
+      return false;
+    }
+    if (query && !String(row.jwt || '').toLowerCase().includes(query)) {
+      return false;
+    }
+    return true;
+  });
+
+  const sorted = [...rows];
+  switch (state.filters.sort) {
+    case 'quota-desc':
+      sorted.sort((a, b) => (b.quota - a.quota) || a.jwt.localeCompare(b.jwt));
+      break;
+    case 'updated-desc':
+      sorted.sort((a, b) => {
+        const left = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
+        const right = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
+        return (right - left) || (a.quota - b.quota) || a.jwt.localeCompare(b.jwt);
+      });
+      break;
+    case 'status-asc-quota-asc':
+    default:
+      sorted.sort((a, b) => {
+        const left = STATUS_ORDER[a.status] ?? 99;
+        const right = STATUS_ORDER[b.status] ?? 99;
+        if (left !== right) {
+          return left - right;
+        }
+        if (a.quota !== b.quota) {
+          return a.quota - b.quota;
+        }
+        return a.jwt.localeCompare(b.jwt);
+      });
+      break;
+  }
+
+  return sorted;
+}
+
+function renderQuotaOverview() {
+  const summary = state.snapshot?.summary || {
+    total_count: 0,
+    total_quota: 0,
+    low_quota_count: 0,
+    near_empty_count: 0,
+  };
+
+  quotaOverviewGrid.innerHTML = [
+    metric('总号数', formatCount(summary.total_count)),
+    metric('总剩余额度', formatCount(summary.total_quota)),
+    metric('低余额号', formatCount(summary.low_quota_count), '2 <= quota < 10'),
+    metric('接近没额度号', formatCount(summary.near_empty_count), 'quota < 5'),
+  ].join('');
+}
+
+function renderQuotaTableTools() {
+  const rows = getFilteredRows();
+  const disabled = state.probing || rows.length === 0 ? 'disabled' : '';
+  quotaTableTools.innerHTML = `
+    <div class="action-row quota-toolbar" style="margin-bottom: 16px; flex-wrap: wrap; align-items: end; gap: 12px;">
+      <label class="field" style="min-width: 150px;">
+        <span>状态</span>
+        <select id="statusFilter">
+          <option value="all">全部</option>
+          <option value="near-empty">接近没额度</option>
+          <option value="low">低余额</option>
+          <option value="healthy">健康</option>
+          <option value="probe-error">核验失败</option>
+        </select>
+      </label>
+      <label class="field" style="min-width: 150px;">
+        <span>池位</span>
+        <select id="bucketFilter">
+          <option value="all">全部</option>
+          <option value="ready">ready</option>
+          <option value="reusable">reusable</option>
+          <option value="borrowed">borrowed</option>
+        </select>
+      </label>
+      <label class="field" style="min-width: 240px; flex: 1 1 240px;">
+        <span>搜索 JWT</span>
+        <input id="queryInput" type="search" placeholder="输入 token 片段" value="${escapeHtml(state.filters.query)}" />
+      </label>
+      <label class="field" style="min-width: 180px;">
+        <span>排序</span>
+        <select id="sortSelect">
+          <option value="status-asc-quota-asc">按状态再按额度</option>
+          <option value="quota-desc">额度从高到低</option>
+          <option value="updated-desc">按最近更新时间</option>
+        </select>
+      </label>
+      <button type="button" class="button primary" id="probeBtn" ${disabled}>${state.probing ? '核验中' : `实时核验当前筛选 (${rows.length})`}</button>
+    </div>
+  `;
+
+  document.getElementById('statusFilter').value = state.filters.status;
+  document.getElementById('bucketFilter').value = state.filters.bucket;
+  document.getElementById('sortSelect').value = state.filters.sort;
+
+  document.getElementById('statusFilter')?.addEventListener('change', (event) => {
+    state.filters.status = event.target.value;
+    renderQuotaTable();
+  });
+  document.getElementById('bucketFilter')?.addEventListener('change', (event) => {
+    state.filters.bucket = event.target.value;
+    renderQuotaTable();
+  });
+  document.getElementById('queryInput')?.addEventListener('input', (event) => {
+    state.filters.query = event.target.value;
+    renderQuotaTable();
+  });
+  document.getElementById('sortSelect')?.addEventListener('change', (event) => {
+    state.filters.sort = event.target.value;
+    renderQuotaTable();
+  });
+  document.getElementById('probeBtn')?.addEventListener('click', runProbeCurrentFilter);
+}
+
+function renderQuotaTable() {
+  renderQuotaTableTools();
+  const rows = getFilteredRows();
+  probeState.textContent = state.probing
+    ? '正在核验当前筛选结果'
+    : `当前筛选 ${rows.length} 条；总览仍基于缓存快照`;
+
+  if (!rows.length) {
+    quotaTableWrap.innerHTML = '<div class="data-item"><strong>结果</strong><span>当前筛选没有匹配账号</span></div>';
+    return;
+  }
+
+  quotaTableWrap.innerHTML = `
+    <div class="table-scroll">
+      <table class="model-table quota-table">
+        <thead>
+          <tr>
+            <th>额度</th>
+            <th>状态</th>
+            <th>JWT</th>
+            <th>池位</th>
+            <th>最近更新时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => {
+            const expanded = state.expandedJWTs.has(row.jwt);
+            const statusTone = toneForStatus(row.status);
+            const statusLabel = STATUS_LABELS[row.status] || row.status || '未知';
+            const jwtDisplay = expanded ? row.jwt : maskJWT(row.jwt);
+            const note = row.probeState === 'live'
+              ? '<small>实时</small>'
+              : row.probeState === 'error'
+                ? `<small>${escapeHtml(row.probeError || '核验失败')}</small>`
+                : '<small>缓存</small>';
+            return `
+              <tr>
+                <td><strong>${escapeHtml(String(row.quota))}</strong></td>
+                <td><div class="model-capabilities">${pill(statusLabel, statusTone)} ${note}</div></td>
+                <td>
+                  <button type="button" class="button ghost quota-jwt-button" style="min-height: 44px; letter-spacing: 0.06em; text-transform: none; font-size: 0.84rem;" onclick="toggleJwtVisibility('${escapeHtml(row.jwt)}')">${escapeHtml(jwtDisplay)}</button>
+                </td>
+                <td>${escapeHtml(row.pool_bucket || 'unknown')}</td>
+                <td>${formatDateTime(row.last_checked_at)}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function runProbeCurrentFilter() {
+  const rows = getFilteredRows();
+  if (!rows.length || state.probing) {
+    return;
+  }
+
+  state.probing = true;
+  renderQuotaTable();
+  try {
+    const payload = await fetchJSON('/v1/admin/quota/probe', {
+      method: 'POST',
+      body: JSON.stringify({ jwts: rows.map((row) => row.jwt) }),
+    });
+
+    for (const item of payload.results || []) {
+      state.probeOverlay.set(item.jwt, {
+        ...item,
+        checked_at: payload.checked_at,
+      });
+    }
+    pushLog(`实时核验完成：${rows.length} 条`);
+  } catch (error) {
+    if (error.status === 401) {
+      window.location.replace('/admin/login');
+      return;
+    }
+    pushLog(`实时核验失败：${error.message}`, true);
+  } finally {
+    state.probing = false;
+    renderQuotaTable();
+  }
+}
+
 function modelTableRows(models, type) {
-  if (!models.length) {
+  if (!models?.length) {
     return `<tr><td colspan="4" class="subtle">暂无${type === 'text' ? '文本' : '图片'}模型</td></tr>`;
   }
 
   return models.map((item) => {
     const capabilities = [];
     if (type === 'text') {
-      capabilities.push(item.internet ? capabilityPill('联网', 'good') : capabilityPill('标准'));
+      capabilities.push(item.internet ? modelCapabilityPill('联网', 'good') : modelCapabilityPill('标准'));
     } else {
-      capabilities.push(item.supports_edit ? capabilityPill('图生图', 'good') : capabilityPill('仅生图'));
+      capabilities.push(item.supports_edit ? modelCapabilityPill('图生图', 'good') : modelCapabilityPill('仅生图'));
       if (item.supports_merge) {
-        capabilities.push(capabilityPill('拼图', 'warn'));
+        capabilities.push(modelCapabilityPill('拼图', 'warn'));
       }
     }
 
@@ -217,9 +440,8 @@ function modelTableRows(models, type) {
   }).join('');
 }
 
-function renderModels(snapshot) {
-  const { catalog } = snapshot;
-
+function renderModels() {
+  const catalog = state.catalog || { text_models: [], image_models: [] };
   modelsSection.innerHTML = `
     <div class="models-stack">
       <section class="model-group">
@@ -230,18 +452,12 @@ function renderModels(snapshot) {
         <div class="table-scroll">
           <table class="model-table">
             <thead>
-              <tr>
-                <th>模型</th>
-                <th>类型</th>
-                <th>能力</th>
-                <th>Cost</th>
-              </tr>
+              <tr><th>模型</th><th>类型</th><th>能力</th><th>Cost</th></tr>
             </thead>
             <tbody>${modelTableRows(catalog.text_models, 'text')}</tbody>
           </table>
         </div>
       </section>
-
       <section class="model-group">
         <div class="model-group-head">
           <h4>图片模型</h4>
@@ -250,12 +466,7 @@ function renderModels(snapshot) {
         <div class="table-scroll">
           <table class="model-table">
             <thead>
-              <tr>
-                <th>模型</th>
-                <th>类型</th>
-                <th>能力</th>
-                <th>Cost</th>
-              </tr>
+              <tr><th>模型</th><th>类型</th><th>能力</th><th>Cost</th></tr>
             </thead>
             <tbody>${modelTableRows(catalog.image_models, 'image')}</tbody>
           </table>
@@ -265,53 +476,25 @@ function renderModels(snapshot) {
   `;
 }
 
-function renderMigration(snapshot) {
-  const { migration, meta } = snapshot;
+function renderMigration() {
+  const migration = state.migration || {};
+  const meta = state.meta || {};
   migrationSection.innerHTML = `
     <div class="data-grid">
       <div class="data-item"><strong>旧池来源</strong><span class="value-compact">${escapeHtml(meta.primary_public_base_url || '未配置')}</span></div>
-      <div class="data-item"><strong>请求导入</strong><span>${formatCount(migration.requested)}</span></div>
-      <div class="data-item"><strong>成功导入</strong><span>${formatCount(migration.imported)}</span></div>
-      <div class="data-item"><strong>重复跳过</strong><span>${formatCount(migration.duplicates)}</span></div>
-      <div class="data-item"><strong>拒绝导入</strong><span>${formatCount(migration.rejected)}</span></div>
-      <div class="data-item"><strong>导入后总量</strong><span>${formatCount(migration.total_count || snapshot.pool.total_count)}</span></div>
+      <div class="data-item"><strong>请求导入</strong><span>${formatCount(migration.requested || 0)}</span></div>
+      <div class="data-item"><strong>成功导入</strong><span>${formatCount(migration.imported || 0)}</span></div>
+      <div class="data-item"><strong>重复跳过</strong><span>${formatCount(migration.duplicates || 0)}</span></div>
+      <div class="data-item"><strong>拒绝导入</strong><span>${formatCount(migration.rejected || 0)}</span></div>
+      <div class="data-item"><strong>导入后总量</strong><span>${formatCount(migration.total_count || 0)}</span></div>
       <div class="data-item"><strong>开始时间</strong><span>${formatDateTime(migration.started_at)}</span></div>
       <div class="data-item"><strong>结束时间</strong><span>${formatDateTime(migration.finished_at)}</span></div>
     </div>
     <div class="strip">
       ${migration.last_error ? pill(`迁移报错：${migration.last_error}`, 'danger') : pill('最近迁移没有报错', 'good')}
+      <button type="button" class="button secondary" id="migrateBtn">导入旧池</button>
     </div>
   `;
-}
-
-function renderActions(snapshot) {
-  const fillDefault = Math.max(snapshot.pool.low_watermark || 0, 50);
-  actionsSection.innerHTML = `
-    <div class="action-grid">
-      <section class="action-card">
-        <h3>补号</h3>
-        <p>手动补号，不改阈值。</p>
-        <div class="action-row">
-          <label class="field" style="min-width: 180px;">
-            <span>补号数量</span>
-            <input id="fillCount" type="number" min="1" step="1" value="${fillDefault}" />
-          </label>
-          <button type="button" class="button primary" id="fillBtn">开始补号</button>
-        </div>
-      </section>
-      <section class="action-card">
-        <h3>清理坏号</h3>
-        <p>检查当前号池并清掉失效账号。</p>
-        <div class="action-row">
-          <button type="button" class="button secondary" id="pruneBtn">执行清理</button>
-          <button type="button" class="button secondary" id="migrateBtn">导入旧池</button>
-        </div>
-      </section>
-    </div>
-  `;
-
-  document.getElementById('fillBtn')?.addEventListener('click', runFill);
-  document.getElementById('pruneBtn')?.addEventListener('click', runPrune);
   document.getElementById('migrateBtn')?.addEventListener('click', runMigration);
 }
 
@@ -325,7 +508,6 @@ function renderDanger() {
       </div>
     </div>
   `;
-
   document.getElementById('retireBtn')?.addEventListener('click', runRetire);
 }
 
@@ -338,15 +520,16 @@ function renderLogs() {
 
 function renderSnapshot() {
   if (!state.snapshot) {
-    statusGrid.innerHTML = '<p class="subtle">正在读取后台状态。</p>';
+    quotaOverviewGrid.innerHTML = '<p class="subtle">正在读取后台状态。</p>';
+    quotaTableWrap.innerHTML = '<p class="subtle">正在读取后台状态。</p>';
     renderLogs();
     return;
   }
-  renderStatus(state.snapshot);
-  renderPool(state.snapshot);
-  renderModels(state.snapshot);
-  renderMigration(state.snapshot);
-  renderActions(state.snapshot);
+
+  renderQuotaOverview();
+  renderQuotaTable();
+  renderModels();
+  renderMigration();
   renderDanger();
   renderLogs();
 }
@@ -365,23 +548,24 @@ async function refreshAll() {
       return;
     }
 
-    const [meta, pool, catalog, migration] = await Promise.all([
+    const [meta, snapshot, catalog, migration] = await Promise.all([
       fetchJSON('/v1/admin/meta', { method: 'GET' }),
-      fetchJSON('/v1/admin/pool', { method: 'GET' }),
+      fetchJSON('/v1/admin/quota/snapshot', { method: 'GET' }),
       fetchJSON('/v1/admin/catalog', { method: 'GET' }),
       fetchJSON('/v1/admin/migration/status', { method: 'GET' }),
     ]);
 
     state.bannerError = '';
-    state.snapshot = {
-      session,
-      meta,
-      pool,
-      catalog,
-      migration,
-      refreshedAt: new Date().toISOString(),
-    };
-    pushLog('面板已刷新');
+    state.session = session;
+    state.meta = meta;
+    state.snapshot = snapshot;
+    state.catalog = catalog;
+    state.migration = migration;
+    state.probeOverlay.clear();
+
+    topline.textContent = '首屏只看额度总览和号池明细。';
+    setRefreshState(`最后刷新 ${formatDateTime(new Date().toISOString())}`, 'good');
+    pushLog('额度看板已刷新');
     renderSnapshot();
   } catch (error) {
     if (error.status === 401) {
@@ -389,55 +573,13 @@ async function refreshAll() {
       return;
     }
     state.bannerError = error.message || '刷新失败';
+    topline.textContent = '暂时拿不到后台状态。';
+    setRefreshState('刷新失败', 'danger');
     pushLog(state.bannerError, true);
-    if (state.snapshot) {
-      renderSnapshot();
-    } else {
-      topline.textContent = '暂时拿不到后台状态。';
-      setRefreshState('刷新失败', 'danger');
-      renderLogs();
-    }
+    renderSnapshot();
   } finally {
     state.refreshing = false;
     refreshBtn.disabled = false;
-  }
-}
-
-async function runFill() {
-  const input = document.getElementById('fillCount');
-  const count = Number(input?.value || 0);
-  if (!Number.isInteger(count) || count < 1) {
-    pushLog('补号数量必须是大于 0 的整数', true);
-    return;
-  }
-
-  try {
-    const result = await fetchJSON('/v1/admin/pool/fill', {
-      method: 'POST',
-      body: JSON.stringify({ count }),
-    });
-    pushLog(`补号任务已提交：task=${result.task_id || 'unknown'} requested=${result.requested || count}`);
-    await refreshAll();
-  } catch (error) {
-    if (error.status === 401) {
-      window.location.replace('/admin/login');
-      return;
-    }
-    pushLog(`补号失败：${error.message}`, true);
-  }
-}
-
-async function runPrune() {
-  try {
-    const result = await fetchJSON('/v1/admin/pool/prune', { method: 'POST' });
-    pushLog(`坏号清理完成：checked=${result.checked || 0} removed=${result.removed || 0}`);
-    await refreshAll();
-  } catch (error) {
-    if (error.status === 401) {
-      window.location.replace('/admin/login');
-      return;
-    }
-    pushLog(`清理失败：${error.message}`, true);
   }
 }
 

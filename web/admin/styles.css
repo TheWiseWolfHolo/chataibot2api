@@ -627,7 +627,8 @@ body::before {
   text-transform: uppercase;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   min-height: 54px;
   padding: 10px 14px;
@@ -641,7 +642,8 @@ body::before {
   color: var(--ink);
 }
 
-.field input:focus {
+.field input:focus,
+.field select:focus {
   outline: none;
   background: var(--yellow);
 }
@@ -720,6 +722,15 @@ body::before {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.quota-toolbar .button {
+  margin-bottom: 2px;
+}
+
+.quota-table .quota-jwt-button {
+  width: 100%;
+  justify-content: flex-start;
 }
 
 .tag {
