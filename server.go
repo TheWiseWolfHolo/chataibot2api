@@ -26,6 +26,7 @@ func NewServerHandler(cfg Config, app *App) http.Handler {
 	mux.Handle("/v1/admin/pool/prune", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolPrune)))
 	mux.Handle("/v1/admin/pool/export", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolExport)))
 	mux.Handle("/v1/admin/meta", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminMeta)))
+	mux.Handle("/v1/admin/catalog", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminCatalog)))
 	mux.Handle("/v1/admin/migration/status", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminMigrationStatus)))
 	mux.Handle("/v1/admin/migrate-from-old", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminMigrateFromOld)))
 	mux.Handle("/v1/admin/retire-old", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminRetireOld)))
@@ -214,6 +215,15 @@ func (a *App) HandleAdminMeta(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, a.AdminMeta())
+}
+
+func (a *App) HandleAdminCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, a.AdminCatalog())
 }
 
 func (a *App) HandleAdminMigrationStatus(w http.ResponseWriter, r *http.Request) {

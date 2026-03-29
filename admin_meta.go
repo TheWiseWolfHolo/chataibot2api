@@ -32,6 +32,21 @@ type MigrationStatus struct {
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
+type AdminCatalog struct {
+	LowQuotaThreshold int              `json:"low_quota_threshold"`
+	TextModels        []AdminModelInfo `json:"text_models"`
+	ImageModels       []AdminModelInfo `json:"image_models"`
+}
+
+type AdminModelInfo struct {
+	ID            string `json:"id"`
+	Cost          int    `json:"cost"`
+	Category      string `json:"category"`
+	Internet      bool   `json:"internet,omitempty"`
+	SupportsEdit  bool   `json:"supports_edit,omitempty"`
+	SupportsMerge bool   `json:"supports_merge,omitempty"`
+}
+
 func buildVersionString() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok || info == nil {

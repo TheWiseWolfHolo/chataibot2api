@@ -444,3 +444,28 @@ func TestSimplePoolExportAccountsReturnsSnapshotAcrossReadyReusableAndBorrowed(t
 		t.Fatalf("unexpected exported snapshot: %+v", exported)
 	}
 }
+
+func TestSimplePoolStatusReportsTargetAndLowQuotaCount(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) int {
+		return 65
+	})
+	pool.ready = []*Account{
+		{JWT: "jwt-healthy", Quota: 65},
+		{JWT: "jwt-low", Quota: 6},
+	}
+	pool.reusable = []*Account{
+		{JWT: "jwt-low-2", Quota: 9},
+	}
+
+	status := pool.Status()
+	if status.TargetCount != 10 {
+		t.Fatalf("expected target count 10, got %+v", status)
+	}
+	if status.LowQuotaCount != 2 {
+		t.Fatalf("expected low quota count 2, got %+v", status)
+	}
+}

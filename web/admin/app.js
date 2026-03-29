@@ -1,8 +1,11 @@
 const tokenInput = document.getElementById('adminToken');
 const saveTokenBtn = document.getElementById('saveTokenBtn');
 const refreshBtn = document.getElementById('refreshBtn');
+const heroMetrics = document.getElementById('heroMetrics');
+const commandStatus = document.getElementById('commandStatus');
 const overviewCard = document.getElementById('overviewCard');
 const persistenceCard = document.getElementById('persistenceCard');
+const modelsCard = document.getElementById('modelsCard');
 const migrationCard = document.getElementById('migrationCard');
 const controlsCard = document.getElementById('controlsCard');
 const domainCard = document.getElementById('domainCard');
@@ -15,11 +18,13 @@ const state = {
 };
 
 tokenInput.value = state.token;
+setConnectionState(Boolean(state.token), state.token ? '待刷新' : '未连接');
 
 saveTokenBtn.addEventListener('click', () => {
   state.token = tokenInput.value.trim();
   localStorage.setItem('holo_image_admin_token', state.token);
-  renderLog('已保存 admin key');
+  setConnectionState(Boolean(state.token), state.token ? '待刷新' : '未连接');
+  pushLog(state.token ? 'admin key 已保存' : 'admin key 已清空');
 });
 
 refreshBtn.addEventListener('click', refreshAll);
@@ -33,6 +38,10 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function formatCount(value) {
+  return Number(value ?? 0).toLocaleString('zh-CN');
+}
+
 function formatDateTime(value) {
   if (!value) {
     return '—';
@@ -44,31 +53,27 @@ function formatDateTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false });
 }
 
+function setConnectionState(online, label) {
+  commandStatus.textContent = label;
+  commandStatus.classList.toggle('online', online);
+}
+
 function pushLog(message, isError = false) {
   const stamp = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-  const level = isError ? 'ERROR' : 'INFO';
-  state.logs.unshift(`${stamp} · ${level} · ${message}`);
+  state.logs.unshift(`${stamp} · ${isError ? 'ERROR' : 'INFO'} · ${message}`);
   state.logs = state.logs.slice(0, 12);
   renderLog();
 }
 
-function renderStat(label, value) {
-  return `
-    <div class="stat">
-      <span class="stat-label">${escapeHtml(label)}</span>
-      <span class="stat-value">${escapeHtml(value)}</span>
-    </div>
-  `;
-}
-
 function renderLog() {
-  const entries = state.logs.length > 0
+  const items = state.logs.length > 0
     ? state.logs.map((entry) => `<li class="log-entry">${escapeHtml(entry)}</li>`).join('')
-    : '<li class="log-entry">尚无操作记录</li>';
+    : '<li class="log-entry">日志还没开始滚动，先点一次“刷新面板”。</li>';
+
   logCard.innerHTML = `
-    <h2>运行日志</h2>
-    <p class="hint">所有失败会直接显示，不做静默兜底。</p>
-    <ul class="log-list">${entries}</ul>
+    <h2>操作日志</h2>
+    <p class="panel-lead">这里只显示结果和错误，不写奇怪的自我解释。</p>
+    <ul class="log-list">${items}</ul>
   `;
 }
 
@@ -84,10 +89,7 @@ async function api(path, options = {}) {
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(path, {
-    ...options,
-    headers,
-  });
+  const response = await fetch(path, { ...options, headers });
   const text = await response.text();
   let payload = {};
   if (text) {
@@ -97,127 +99,265 @@ async function api(path, options = {}) {
       payload = { raw: text };
     }
   }
+
   if (!response.ok) {
     throw new Error(payload?.error?.message || payload?.message || payload?.raw || `HTTP ${response.status}`);
   }
   return payload;
 }
 
-function renderOverview(pool, meta) {
-  overviewCard.innerHTML = `
-    <div class="pill ${meta.is_primary_target ? 'success' : 'warning'}">
-      ${meta.is_primary_target ? '当前实例已接管主域名' : '当前实例尚未接管主域名'}
+function heroChip(label, value) {
+  return `<span class="hero-chip">${escapeHtml(label)} <strong>${escapeHtml(value)}</strong></span>`;
+}
+
+function statTile(label, value, note = '') {
+  return `
+    <div class="stat-tile">
+      <span class="stat-label">${escapeHtml(label)}</span>
+      <span class="stat-value">${escapeHtml(value)}</span>
+      ${note ? `<span class="stat-note">${escapeHtml(note)}</span>` : ''}
     </div>
-    <h2>总览</h2>
-    <p class="hint">实例：${escapeHtml(meta.instance_name || '未配置')} · 版本：${escapeHtml(meta.version || 'unknown')}</p>
-    <div class="stats">
-      ${renderStat('总号数', pool.total_count ?? 0)}
-      ${renderStat('可立即使用', (pool.ready_count ?? 0) + (pool.reusable_count ?? 0))}
-      ${renderStat('低水位', pool.low_watermark ?? 0)}
-      ${renderStat('自动补号', pool.auto_fill_active ? '开启' : '关闭')}
-      ${renderStat('注册成功', pool.registration_successes ?? 0)}
-      ${renderStat('注册失败', pool.registration_failures ?? 0)}
+  `;
+}
+
+function signalTile(label, value, note = '') {
+  return `
+    <div class="signal-tile">
+      <span class="signal-label">${escapeHtml(label)}</span>
+      <span class="signal-value">${escapeHtml(value)}</span>
+      ${note ? `<span class="signal-note">${escapeHtml(note)}</span>` : ''}
+    </div>
+  `;
+}
+
+function modelTag(model, extra = '') {
+  return `<span class="model-tag">${escapeHtml(model)}${extra ? `<small>${escapeHtml(extra)}</small>` : ''}</span>`;
+}
+
+function renderHero(pool, meta, catalog) {
+  heroMetrics.innerHTML = [
+    heroChip('主域名', meta.is_primary_target ? '已接管' : '未接管'),
+    heroChip('总号数', formatCount(pool.total_count)),
+    heroChip('低余额号', formatCount(pool.low_quota_count)),
+    heroChip('文本模型', formatCount(catalog.text_models.length)),
+    heroChip('图片模型', formatCount(catalog.image_models.length)),
+  ].join('');
+}
+
+function renderOverview(pool) {
+  const availableCount = (pool.ready_count ?? 0) + (pool.reusable_count ?? 0);
+
+  overviewCard.innerHTML = `
+    <h2>号池总览</h2>
+    <p class="panel-lead">首屏直接看总量、低余额、坏号清理和补号压力，不再让你自己猜。</p>
+    <div class="stats-grid">
+      ${statTile('当前总号数', formatCount(pool.total_count), `目标池 ${formatCount(pool.target_count)}`)}
+      ${statTile('可直接使用', formatCount(availableCount), `borrowed ${formatCount(pool.borrowed_count)}`)}
+      ${statTile('低余额号', formatCount(pool.low_quota_count), `阈值 < ${formatCount(10)}`)}
+      ${statTile('已清理坏号', formatCount(pool.prune_removed), `累计 prune ${formatCount(pool.prune_checks)}`)}
+    </div>
+    <div class="section-flag-row">
+      <span class="flag ${pool.auto_fill_active ? 'success' : 'warning'}">${pool.auto_fill_active ? '自动补号已开启' : '自动补号已暂停'}</span>
+      <span class="flag ${pool.active_registrations > 0 ? 'warning' : 'success'}">当前注册并发 ${formatCount(pool.active_registrations)}</span>
+      <span class="flag ${pool.registration_failures > 0 ? 'danger' : 'success'}">注册失败 ${formatCount(pool.registration_failures)}</span>
+      <span class="flag">低水位 ${formatCount(pool.low_watermark)}</span>
     </div>
   `;
 }
 
 function renderPersistence(pool) {
   persistenceCard.innerHTML = `
-    <h2>持久化状态</h2>
-    <p class="hint">持久化文件：${escapeHtml(pool.persistence_path || '未启用')}</p>
-    <div class="stats">
-      ${renderStat('持久化启用', pool.persistence_enabled ? '是' : '否')}
-      ${renderStat('落盘数量', pool.persisted_count ?? 0)}
-      ${renderStat('重启恢复', pool.restore_loaded ?? 0)}
-      ${renderStat('恢复拒绝', pool.restore_rejected ?? 0)}
-      ${renderStat('最后落盘', formatDateTime(pool.last_persist_at))}
-      ${renderStat('最后恢复', formatDateTime(pool.last_restore_at))}
+    <h2>持久化与恢复</h2>
+    <p class="panel-lead">看这块就知道服务是不是能自己活下去。</p>
+    <div class="signal-grid">
+      ${signalTile('已落盘', formatCount(pool.persisted_count), pool.persistence_path || '未配置落盘路径')}
+      ${signalTile('重启恢复', formatCount(pool.restore_loaded), `拒绝 ${formatCount(pool.restore_rejected)}`)}
+      ${signalTile('最后落盘', formatDateTime(pool.last_persist_at))}
+      ${signalTile('最后恢复', formatDateTime(pool.last_restore_at))}
+    </div>
+  `;
+}
+
+function renderModels(catalog) {
+  const textTags = catalog.text_models.map((model) => {
+    const marks = [];
+    if (model.internet) {
+      marks.push('联网');
+    }
+    marks.push(`cost ${model.cost}`);
+    return modelTag(model.id, marks.join(' · '));
+  }).join('');
+
+  const imageTags = catalog.image_models.map((model) => {
+    const marks = [];
+    if (model.supports_edit) {
+      marks.push('编辑');
+    }
+    if (model.supports_merge) {
+      marks.push('拼图');
+    }
+    marks.push(`cost ${model.cost}`);
+    return modelTag(model.id, marks.join(' · '));
+  }).join('');
+
+  modelsCard.innerHTML = `
+    <h2>模型支持</h2>
+    <p class="panel-lead">文本和图片模型都直接摊开显示，不再靠猜。</p>
+    <div class="model-layout">
+      <div class="model-cluster">
+        <div class="cluster-head">
+          <h3>文本模型</h3>
+          <span>${formatCount(catalog.text_models.length)} 个</span>
+        </div>
+        <div class="model-tags">${textTags}</div>
+      </div>
+      <div class="model-cluster">
+        <div class="cluster-head">
+          <h3>图片模型</h3>
+          <span>${formatCount(catalog.image_models.length)} 个</span>
+        </div>
+        <div class="model-tags">${imageTags}</div>
+      </div>
     </div>
   `;
 }
 
 function renderMigration(pool, migration, meta) {
-  const statusClass = migration.last_error ? 'danger' : migration.imported > 0 ? 'success' : 'warning';
+  const migrationFlag = migration.imported > 0
+    ? '<span class="flag success">最近迁移有新增</span>'
+    : '<span class="flag">最近没有新的迁移结果</span>';
+
   migrationCard.innerHTML = `
-    <div class="pill ${statusClass}">
-      ${migration.last_error ? '最近迁移失败' : migration.imported > 0 ? '最近迁移已导入账号' : '等待迁移动作'}
-    </div>
     <h2>迁移中心</h2>
-    <p class="hint">旧池来源：${escapeHtml(meta.primary_public_base_url || '未配置')} → 当前实例</p>
-    <div class="stats">
-      ${renderStat('requested', migration.requested ?? 0)}
-      ${renderStat('imported', migration.imported ?? 0)}
-      ${renderStat('duplicates', migration.duplicates ?? 0)}
-      ${renderStat('rejected', migration.rejected ?? 0)}
-      ${renderStat('overflow', migration.overflow ?? 0)}
-      ${renderStat('当前总数', migration.total_count ?? pool.total_count ?? 0)}
+    <p class="panel-lead">旧池来源固定为当前主域名，导入结果直接在这里看。</p>
+    <div class="section-flag-row">
+      ${migrationFlag}
+      <span class="flag">来源 ${escapeHtml(meta.primary_public_base_url || '未配置')}</span>
     </div>
-    <div class="action-row" style="margin-top:16px;">
-      <button id="migrateBtn" type="button">迁移旧实例池子</button>
-      <span class="muted">started: ${escapeHtml(formatDateTime(migration.started_at))}</span>
-      <span class="muted">finished: ${escapeHtml(formatDateTime(migration.finished_at))}</span>
+    <div class="signal-grid">
+      ${signalTile('请求导入', formatCount(migration.requested))}
+      ${signalTile('成功导入', formatCount(migration.imported))}
+      ${signalTile('重复跳过', formatCount(migration.duplicates))}
+      ${signalTile('导入后总量', formatCount(migration.total_count || pool.total_count))}
     </div>
-    ${migration.last_error ? `<p class="hint" style="margin-top:12px;color:#fca5a5;">${escapeHtml(migration.last_error)}</p>` : ''}
+    <div class="action-row" style="margin-top:18px;">
+      <button id="migrateBtn" type="button">迁移旧池到当前实例</button>
+    </div>
+    <div class="section-flag-row">
+      <span class="flag">开始 ${escapeHtml(formatDateTime(migration.started_at))}</span>
+      <span class="flag">完成 ${escapeHtml(formatDateTime(migration.finished_at))}</span>
+    </div>
   `;
+
   document.getElementById('migrateBtn')?.addEventListener('click', runMigration);
 }
 
-function renderControls() {
+function renderControls(pool) {
   controlsCard.innerHTML = `
-    <h2>池管理</h2>
-    <p class="hint">直接对服务端管理接口进行操作。</p>
-    <div class="action-row" style="margin-top:16px;">
+    <h2>快速操作</h2>
+    <p class="panel-lead">保留最常用的动作，别把首页做成按钮垃圾场。</p>
+    <ul class="stack-list">
+      <li class="stack-item">
+        <div>
+          <strong>自动补号</strong>
+          <span>低于 ${formatCount(pool.low_watermark)} 自动补到 ${formatCount(pool.target_count)}</span>
+        </div>
+        <code>${pool.auto_fill_active ? 'ON' : 'OFF'}</code>
+      </li>
+      <li class="stack-item">
+        <div>
+          <strong>手动补号</strong>
+          <span>紧急补充 50 / 200 个</span>
+        </div>
+        <code>FILL</code>
+      </li>
+      <li class="stack-item">
+        <div>
+          <strong>坏号清理</strong>
+          <span>主动 prune 当前池子里的无效账号</span>
+        </div>
+        <code>PRUNE</code>
+      </li>
+    </ul>
+    <div class="action-row" style="margin-top:18px;">
       <button id="fill50Btn" type="button">补 50 个</button>
       <button id="fill200Btn" type="button">补 200 个</button>
-      <button id="pruneBtn" type="button">清理失效号</button>
+      <button id="pruneBtn" type="button">清理坏号</button>
     </div>
   `;
+
   document.getElementById('fill50Btn')?.addEventListener('click', () => runFill(50));
   document.getElementById('fill200Btn')?.addEventListener('click', () => runFill(200));
   document.getElementById('pruneBtn')?.addEventListener('click', runPrune);
 }
 
-function renderDomain(meta) {
+function renderDomain(meta, pool) {
   domainCard.innerHTML = `
-    <h2>域名切换状态</h2>
-    <p class="hint">当前域名与目标主域名对比。</p>
-    <div class="stats">
-      ${renderStat('当前实例地址', meta.public_base_url || '未配置')}
-      ${renderStat('目标主域名', meta.primary_public_base_url || '未配置')}
-      ${renderStat('是否主实例', meta.is_primary_target ? '是' : '否')}
-      ${renderStat('上次迁移', formatDateTime(meta.last_migration_at))}
-    </div>
+    <h2>域名与实例</h2>
+    <p class="panel-lead">这一块只说主域名、当前实例和恢复状态，不拐弯。</p>
+    <ul class="stack-list">
+      <li class="stack-item">
+        <div>
+          <strong>主域名</strong>
+          <span>当前对外入口</span>
+        </div>
+        <code>${escapeHtml(meta.public_base_url || '未配置')}</code>
+      </li>
+      <li class="stack-item">
+        <div>
+          <strong>实例标识</strong>
+          <span>当前接管流量的服务实例名</span>
+        </div>
+        <code>${escapeHtml(meta.instance_name || '未配置')}</code>
+      </li>
+      <li class="stack-item">
+        <div>
+          <strong>恢复加载</strong>
+          <span>最近重启后实际恢复进内存的账号数</span>
+        </div>
+        <code>${formatCount(pool.restore_loaded)}</code>
+      </li>
+    </ul>
   `;
 }
 
 function renderRetire() {
   retireCard.innerHTML = `
-    <h2>危险操作</h2>
-    <p class="hint">当前版本不会假装已经自动退役老实例；调用会返回明确错误。</p>
-    <div class="action-row" style="margin-top:16px;">
-      <button id="retireBtn" type="button">退役老实例（当前未自动化）</button>
+    <h2>高危操作</h2>
+    <p class="panel-lead">老实例退役现在还是手动流程，这里只保留明确提示，不写怪话。</p>
+    <div class="section-flag-row">
+      <span class="flag danger">自动退役暂未开放</span>
+      <span class="flag">先确认域名和恢复状态都正常</span>
+    </div>
+    <div class="action-row" style="margin-top:18px;">
+      <button id="retireBtn" type="button">检查退役接口</button>
     </div>
   `;
+
   document.getElementById('retireBtn')?.addEventListener('click', runRetireOld);
 }
 
 async function refreshAll() {
   try {
-    const [pool, meta, migration] = await Promise.all([
+    const [pool, meta, migration, catalog] = await Promise.all([
       api('/v1/admin/pool'),
       api('/v1/admin/meta'),
       api('/v1/admin/migration/status'),
+      api('/v1/admin/catalog'),
     ]);
-    renderOverview(pool, meta);
+
+    renderHero(pool, meta, catalog);
+    renderOverview(pool);
     renderPersistence(pool);
+    renderModels(catalog);
     renderMigration(pool, migration, meta);
-    renderControls();
-    renderDomain(meta);
+    renderControls(pool);
+    renderDomain(meta, pool);
     renderRetire();
-    renderLog();
-    pushLog('状态已刷新');
+    setConnectionState(true, '已连接');
+    pushLog('面板状态已刷新');
   } catch (error) {
-    renderLog();
+    setConnectionState(false, '连接失败');
     pushLog(error.message || String(error), true);
   }
 }
@@ -225,7 +365,7 @@ async function refreshAll() {
 async function runPrune() {
   try {
     const result = await api('/v1/admin/pool/prune', { method: 'POST' });
-    pushLog(`prune 完成：removed=${result.removed}, remaining=${result.remaining}`);
+    pushLog(`坏号清理完成：移除 ${result.removed}，剩余 ${result.remaining}`);
     await refreshAll();
   } catch (error) {
     pushLog(error.message || String(error), true);
@@ -238,7 +378,7 @@ async function runFill(count) {
       method: 'POST',
       body: JSON.stringify({ count }),
     });
-    pushLog(`fill 已触发：task=${result.task_id}, requested=${result.requested}`);
+    pushLog(`补号已触发：任务 ${result.task_id}，请求 ${result.requested}`);
     await refreshAll();
   } catch (error) {
     pushLog(error.message || String(error), true);
@@ -248,7 +388,7 @@ async function runFill(count) {
 async function runMigration() {
   try {
     const result = await api('/v1/admin/migrate-from-old', { method: 'POST' });
-    pushLog(`迁移完成：imported=${result.imported}, duplicates=${result.duplicates}, total=${result.total_count}`);
+    pushLog(`迁移完成：新增 ${result.imported}，重复 ${result.duplicates}，总量 ${result.total_count}`);
     await refreshAll();
   } catch (error) {
     pushLog(error.message || String(error), true);

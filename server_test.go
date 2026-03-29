@@ -1256,6 +1256,29 @@ func TestAdminMigrationStatusEndpointReturnsCurrentState(t *testing.T) {
 	}
 }
 
+func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
+	t.Helper()
+
+	_, _, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/catalog", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"gpt-4.1"`) {
+		t.Fatalf("expected text model in catalog, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"gpt-image-1.5"`) {
+		t.Fatalf("expected image model in catalog, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"low_quota_threshold":10`) {
+		t.Fatalf("expected low quota threshold metadata, got %s", rec.Body.String())
+	}
+}
+
 func TestAdminUIRoutesServeHTMLAndAssets(t *testing.T) {
 	t.Helper()
 

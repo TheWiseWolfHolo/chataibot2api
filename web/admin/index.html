@@ -7,33 +7,55 @@
   <link rel="stylesheet" href="/admin/assets/styles.css" />
 </head>
 <body>
-  <div id="app">
-    <header class="topbar">
-      <div class="headline">
-        <p class="eyebrow">Holo Image Admin</p>
-        <h1>新实例唯一管理面板</h1>
-        <p class="subtext">围绕当前线上实例、迁移状态和号池自恢复能力做集中控制。</p>
+  <div class="aurora aurora-left"></div>
+  <div class="aurora aurora-right"></div>
+  <div class="grid-noise"></div>
+
+  <div id="app" class="shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">HOLO IMAGE // CONTROL CORE</p>
+        <h1>黑金控制台</h1>
+        <p class="hero-text">把号池健康、模型支持、迁移结果和危险操作压进同一张作战面板，首屏就能看懂。</p>
+        <div class="hero-metrics" id="heroMetrics"></div>
       </div>
-      <div class="auth-card">
-        <label for="adminToken">Admin Key</label>
-        <input id="adminToken" type="password" autocomplete="off" placeholder="输入 admin key" />
-        <div class="auth-actions">
-          <button id="saveTokenBtn" type="button">保存</button>
-          <button id="refreshBtn" type="button">刷新状态</button>
+
+      <aside class="command-panel">
+        <div class="command-head">
+          <div>
+            <p class="command-title">Admin Key</p>
+            <p class="command-subtitle">主域名：holo-image-api.zeabur.app</p>
+          </div>
+          <span class="connection-pill" id="commandStatus">未连接</span>
         </div>
-      </div>
+
+        <label class="field-label" for="adminToken">鉴权</label>
+        <input id="adminToken" type="password" autocomplete="off" placeholder="输入 admin key" />
+
+        <div class="auth-actions">
+          <button id="saveTokenBtn" type="button">保存 key</button>
+          <button id="refreshBtn" type="button">刷新面板</button>
+        </div>
+
+        <div class="command-foot">
+          <span>自动补号阈值 500</span>
+          <span>目标池大小 1000</span>
+        </div>
+      </aside>
     </header>
 
-    <main class="dashboard">
-      <section class="panel" id="overviewCard"></section>
+    <main class="board">
+      <section class="panel panel-wide" id="overviewCard"></section>
       <section class="panel" id="persistenceCard"></section>
+      <section class="panel" id="modelsCard"></section>
       <section class="panel" id="migrationCard"></section>
       <section class="panel" id="controlsCard"></section>
       <section class="panel" id="domainCard"></section>
-      <section class="panel danger" id="retireCard"></section>
-      <section class="panel log-panel" id="logCard"></section>
+      <section class="panel panel-danger" id="retireCard"></section>
+      <section class="panel panel-full" id="logCard"></section>
     </main>
   </div>
+
   <script src="/admin/assets/app.js"></script>
 </body>
 </html>

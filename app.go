@@ -96,6 +96,47 @@ func (a *App) CurrentMigrationStatus() MigrationStatus {
 	return status
 }
 
+func (a *App) AdminCatalog() AdminCatalog {
+	catalog := AdminCatalog{
+		LowQuotaThreshold: lowQuotaThreshold,
+		TextModels:        make([]AdminModelInfo, 0, len(textModelRouter)),
+		ImageModels:       make([]AdminModelInfo, 0, len(modelRouter)),
+	}
+
+	for modelID, cfg := range textModelRouter {
+		if cfg.Hidden {
+			continue
+		}
+		catalog.TextModels = append(catalog.TextModels, AdminModelInfo{
+			ID:       modelID,
+			Cost:     cfg.Cost,
+			Category: "text",
+			Internet: cfg.Internet,
+		})
+	}
+	sort.Slice(catalog.TextModels, func(i, j int) bool {
+		return catalog.TextModels[i].ID < catalog.TextModels[j].ID
+	})
+
+	for modelID, cfg := range modelRouter {
+		if cfg.Hidden {
+			continue
+		}
+		catalog.ImageModels = append(catalog.ImageModels, AdminModelInfo{
+			ID:            modelID,
+			Cost:          cfg.Cost,
+			Category:      "image",
+			SupportsEdit:  strings.TrimSpace(cfg.EditMode) != "",
+			SupportsMerge: strings.TrimSpace(cfg.MergeMode) != "",
+		})
+	}
+	sort.Slice(catalog.ImageModels, func(i, j int) bool {
+		return catalog.ImageModels[i].ID < catalog.ImageModels[j].ID
+	})
+
+	return catalog
+}
+
 func (a *App) setMigrationStatus(status MigrationStatus) {
 	a.migrationMu.Lock()
 	defer a.migrationMu.Unlock()

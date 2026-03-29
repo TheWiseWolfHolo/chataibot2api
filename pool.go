@@ -12,7 +12,9 @@ type PoolStatus struct {
 	ReadyCount            int                `json:"ready_count"`
 	ReusableCount         int                `json:"reusable_count"`
 	TotalCount            int                `json:"total_count"`
+	TargetCount           int                `json:"target_count"`
 	BorrowedCount         int                `json:"borrowed_count"`
+	LowQuotaCount         int                `json:"low_quota_count"`
 	WorkerCount           int                `json:"worker_count"`
 	LowWatermark          int                `json:"low_watermark"`
 	AutoFillActive        bool               `json:"auto_fill_active"`
@@ -113,6 +115,8 @@ type PoolOptions struct {
 	MaxFailureBackoff    time.Duration
 	Store                AccountStore
 }
+
+const lowQuotaThreshold = 10
 
 func NewSimplePool(poolSize int, workerCount int, registrar func() (string, error), quota func(string) int) *SimplePool {
 	return NewSimplePoolWithOptions(poolSize, workerCount, registrar, quota, PoolOptions{})
@@ -362,7 +366,9 @@ func (p *SimplePool) Status() PoolStatus {
 		ReadyCount:            len(p.ready),
 		ReusableCount:         len(p.reusable),
 		TotalCount:            len(p.ready) + len(p.reusable),
+		TargetCount:           p.maxSize,
 		BorrowedCount:         len(p.borrowed),
+		LowQuotaCount:         p.lowQuotaCountLocked(),
 		WorkerCount:           p.workerCount,
 		LowWatermark:          p.lowWatermark,
 		AutoFillActive:        p.autoFillActive,
@@ -385,6 +391,30 @@ func (p *SimplePool) Status() PoolStatus {
 		LastRestoreAt:         timePointer(p.lastRestoreAt),
 		Tasks:                 tasks,
 	}
+}
+
+func (p *SimplePool) lowQuotaCountLocked() int {
+	if p == nil {
+		return 0
+	}
+
+	count := 0
+	for _, acc := range p.ready {
+		if acc != nil && acc.Quota >= 2 && acc.Quota < lowQuotaThreshold {
+			count++
+		}
+	}
+	for _, acc := range p.reusable {
+		if acc != nil && acc.Quota >= 2 && acc.Quota < lowQuotaThreshold {
+			count++
+		}
+	}
+	for acc := range p.borrowed {
+		if acc != nil && acc.Quota >= 2 && acc.Quota < lowQuotaThreshold {
+			count++
+		}
+	}
+	return count
 }
 
 func (p *SimplePool) StartFillTask(count int) FillTaskSnapshot {
