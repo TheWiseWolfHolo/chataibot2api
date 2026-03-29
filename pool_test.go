@@ -413,3 +413,34 @@ func TestSimplePoolReleaseInvalidAccountUpdatesPersistence(t *testing.T) {
 		t.Fatalf("expected persisted count 0 after invalid release, got %+v", status)
 	}
 }
+
+func TestSimplePoolExportAccountsReturnsSnapshotAcrossReadyReusableAndBorrowed(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) int {
+		return 65
+	})
+	pool.ready = []*Account{
+		{JWT: "jwt-ready", Quota: 65},
+	}
+	pool.reusable = []*Account{
+		{JWT: "jwt-reuse", Quota: 17},
+	}
+	borrowed := &Account{JWT: "jwt-borrowed", Quota: 33}
+	pool.borrowed[borrowed] = "jwt-borrowed"
+
+	exported := pool.ExportAccounts()
+	if len(exported) != 3 {
+		t.Fatalf("expected 3 exported accounts, got %+v", exported)
+	}
+
+	seen := make(map[string]int, len(exported))
+	for _, account := range exported {
+		seen[account.JWT] = account.Quota
+	}
+	if seen["jwt-ready"] != 65 || seen["jwt-reuse"] != 17 || seen["jwt-borrowed"] != 33 {
+		t.Fatalf("unexpected exported snapshot: %+v", exported)
+	}
+}

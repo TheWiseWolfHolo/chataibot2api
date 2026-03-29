@@ -8,7 +8,15 @@ import (
 
 func NewServerHandler(cfg Config, app *App) http.Handler {
 	mux := http.NewServeMux()
+	adminAssets, err := NewAdminUIHandler()
+	if err != nil {
+		panic(err)
+	}
+
 	mux.HandleFunc("/healthz", HealthzHandler)
+	mux.HandleFunc("/admin", HandleAdminIndex)
+	mux.HandleFunc("/admin/", HandleAdminIndex)
+	mux.Handle("/admin/assets/", http.StripPrefix("/admin/assets/", adminAssets))
 	mux.Handle("/v1/images/generations", BearerAuthMiddleware(cfg.APIBearerToken)(http.HandlerFunc(app.HandleImagesGenerations)))
 	mux.Handle("/v1/models", BearerAuthMiddleware(cfg.APIBearerToken)(http.HandlerFunc(app.HandleModels)))
 	mux.Handle("/v1/chat/completions", BearerAuthMiddleware(cfg.APIBearerToken)(http.HandlerFunc(app.HandleChatCompletions)))
@@ -16,6 +24,11 @@ func NewServerHandler(cfg Config, app *App) http.Handler {
 	mux.Handle("/v1/admin/pool/fill", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolFill)))
 	mux.Handle("/v1/admin/pool/import", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolImport)))
 	mux.Handle("/v1/admin/pool/prune", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolPrune)))
+	mux.Handle("/v1/admin/pool/export", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolExport)))
+	mux.Handle("/v1/admin/meta", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminMeta)))
+	mux.Handle("/v1/admin/migration/status", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminMigrationStatus)))
+	mux.Handle("/v1/admin/migrate-from-old", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminMigrateFromOld)))
+	mux.Handle("/v1/admin/retire-old", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminRetireOld)))
 	return mux
 }
 
@@ -181,6 +194,58 @@ func (a *App) HandleAdminPoolPrune(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, a.pool.Prune())
+}
+
+func (a *App) HandleAdminPoolExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accounts": a.pool.ExportAccounts(),
+	})
+}
+
+func (a *App) HandleAdminMeta(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, a.AdminMeta())
+}
+
+func (a *App) HandleAdminMigrationStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, a.CurrentMigrationStatus())
+}
+
+func (a *App) HandleAdminMigrateFromOld(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	status := a.MigrateFromLegacy()
+	if status.LastError != "" {
+		writeOpenAIError(w, http.StatusBadGateway, status.LastError, "migration_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *App) HandleAdminRetireOld(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeOpenAIError(w, http.StatusNotImplemented, "retire-old is not automated yet; complete domain cutover verification first", "not_implemented")
 }
 
 func HealthzHandler(w http.ResponseWriter, r *http.Request) {

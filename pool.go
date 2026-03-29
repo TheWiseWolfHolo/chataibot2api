@@ -492,6 +492,28 @@ func (p *SimplePool) ImportAccounts(accounts []*Account) ImportPoolResult {
 	return result
 }
 
+func (p *SimplePool) ExportAccounts() []ExportedAccount {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	snapshot := p.snapshotAccountsLocked()
+	exported := make([]ExportedAccount, 0, len(snapshot))
+	for _, account := range snapshot {
+		if account == nil {
+			continue
+		}
+		jwt := strings.TrimSpace(account.JWT)
+		if jwt == "" {
+			continue
+		}
+		exported = append(exported, ExportedAccount{
+			JWT:   jwt,
+			Quota: account.Quota,
+		})
+	}
+	return exported
+}
+
 func (p *SimplePool) Prune() PruneSummary {
 	p.mu.Lock()
 	pooled := make([]pooledAccount, 0, len(p.ready)+len(p.reusable))

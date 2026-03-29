@@ -16,6 +16,7 @@ type fakePool struct {
 	acquiredCost    int
 	released        *Account
 	status          PoolStatus
+	exported        []ExportedAccount
 	fillTask        FillTaskSnapshot
 	pruneResult     PruneSummary
 	importResult    ImportPoolResult
@@ -66,6 +67,10 @@ func (f *fakePool) ImportAccounts(accounts []*Account) ImportPoolResult {
 		}
 	}
 	return f.importResult
+}
+
+func (f *fakePool) ExportAccounts() []ExportedAccount {
+	return append([]ExportedAccount(nil), f.exported...)
 }
 
 type fakeBackend struct {
@@ -235,15 +240,24 @@ func (f *fakeBackend) GetCount(jwtToken string) int {
 }
 
 func newTestHandler() (*fakePool, *fakeBackend, http.Handler) {
+	return newTestHandlerWithLegacyBaseURL("https://holo-image-api.zeabur.app")
+}
+
+func newTestHandlerWithLegacyBaseURL(legacyBaseURL string) (*fakePool, *fakeBackend, http.Handler) {
 	pool := &fakePool{}
 	backend := &fakeBackend{}
-	app := NewApp(pool, backend, func() time.Time {
+	cfg := Config{
+		APIBearerToken:          "api-token",
+		AdminToken:              "admin-token",
+		InstanceName:            "test-instance",
+		PublicBaseURL:           "https://holo-image-api-eners.zeabur.app",
+		PrimaryPublicBaseURL:    "https://holo-image-api.zeabur.app",
+		LegacyPoolExportBaseURL: legacyBaseURL,
+	}
+	app := NewApp(pool, backend, cfg, func() time.Time {
 		return time.Unix(1_700_000_000, 0)
 	})
-	handler := NewServerHandler(Config{
-		APIBearerToken: "api-token",
-		AdminToken:     "admin-token",
-	}, app)
+	handler := NewServerHandler(cfg, app)
 	return pool, backend, handler
 }
 
@@ -288,6 +302,41 @@ func TestLoadConfigReadsPoolStorePathFromEnv(t *testing.T) {
 	}
 	if cfg.PoolStorePath != "/data/holo-image/pool.json" {
 		t.Fatalf("expected pool store path to load from env, got %+v", cfg)
+	}
+}
+
+func TestLoadConfigReadsAdminMigrationFieldsFromEnv(t *testing.T) {
+	t.Helper()
+
+	cfg, err := LoadConfig([]string{}, func(key string) string {
+		values := map[string]string{
+			"PORT":                        "18080",
+			"MAIL_API_BASE_URL":           "https://mail.example.com",
+			"MAIL_DOMAIN":                 "example.com",
+			"MAIL_ADMIN_TOKEN":            "mail-token",
+			"API_BEARER_TOKEN":            "api-token",
+			"ADMIN_TOKEN":                 "admin-token",
+			"INSTANCE_NAME":               "holo-image-api-eners",
+			"PUBLIC_BASE_URL":             "https://holo-image-api-eners.zeabur.app",
+			"PRIMARY_PUBLIC_BASE_URL":     "https://holo-image-api.zeabur.app",
+			"LEGACY_POOL_EXPORT_BASE_URL": "https://holo-image-api.zeabur.app",
+		}
+		return values[key]
+	})
+	if err != nil {
+		t.Fatalf("expected config to load, got %v", err)
+	}
+	if cfg.InstanceName != "holo-image-api-eners" {
+		t.Fatalf("expected instance name, got %+v", cfg)
+	}
+	if cfg.PublicBaseURL != "https://holo-image-api-eners.zeabur.app" {
+		t.Fatalf("expected public base url, got %+v", cfg)
+	}
+	if cfg.PrimaryPublicBaseURL != "https://holo-image-api.zeabur.app" {
+		t.Fatalf("expected primary public base url, got %+v", cfg)
+	}
+	if cfg.LegacyPoolExportBaseURL != "https://holo-image-api.zeabur.app" {
+		t.Fatalf("expected legacy export URL, got %+v", cfg)
 	}
 }
 
@@ -1138,5 +1187,153 @@ func TestAdminPoolImportRequiresAdminTokenAndFiltersInvalidJWTs(t *testing.T) {
 	}
 	if !strings.Contains(authRecorder.Body.String(), `"imported":1`) {
 		t.Fatalf("expected imported count in response, got %s", authRecorder.Body.String())
+	}
+}
+
+func TestAdminPoolExportRequiresAdminTokenAndReturnsSnapshot(t *testing.T) {
+	t.Helper()
+
+	pool, _, handler := newTestHandler()
+	pool.exported = []ExportedAccount{
+		{JWT: "jwt-1", Quota: 65},
+		{JWT: "jwt-2", Quota: 12},
+	}
+
+	unauthReq := httptest.NewRequest(http.MethodGet, "/v1/admin/pool/export", nil)
+	unauthRec := httptest.NewRecorder()
+	handler.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized export status, got %d", unauthRec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/pool/export", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"jwt":"jwt-1"`) || !strings.Contains(rec.Body.String(), `"jwt":"jwt-2"`) {
+		t.Fatalf("expected exported jwts in response, got %s", rec.Body.String())
+	}
+}
+
+func TestAdminMetaEndpointReturnsInstanceInformation(t *testing.T) {
+	t.Helper()
+
+	_, _, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/meta", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"instance_name":"test-instance"`) {
+		t.Fatalf("expected instance name in response, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"primary_public_base_url":"https://holo-image-api.zeabur.app"`) {
+		t.Fatalf("expected primary public base url in response, got %s", rec.Body.String())
+	}
+}
+
+func TestAdminMigrationStatusEndpointReturnsCurrentState(t *testing.T) {
+	t.Helper()
+
+	_, _, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/migration/status", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"total_count":0`) {
+		t.Fatalf("expected migration status payload, got %s", rec.Body.String())
+	}
+}
+
+func TestAdminUIRoutesServeHTMLAndAssets(t *testing.T) {
+	t.Helper()
+
+	_, _, handler := newTestHandler()
+
+	pageReq := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	pageRec := httptest.NewRecorder()
+	handler.ServeHTTP(pageRec, pageReq)
+	if pageRec.Code != http.StatusOK {
+		t.Fatalf("expected admin page 200, got %d body=%s", pageRec.Code, pageRec.Body.String())
+	}
+	if !strings.Contains(pageRec.Body.String(), "Holo Image Admin") {
+		t.Fatalf("expected admin shell html, got %s", pageRec.Body.String())
+	}
+
+	assetReq := httptest.NewRequest(http.MethodGet, "/admin/assets/app.js", nil)
+	assetRec := httptest.NewRecorder()
+	handler.ServeHTTP(assetRec, assetReq)
+	if assetRec.Code != http.StatusOK {
+		t.Fatalf("expected admin asset 200, got %d body=%s", assetRec.Code, assetRec.Body.String())
+	}
+	if !strings.Contains(assetRec.Body.String(), "refreshAll") {
+		t.Fatalf("expected admin asset content, got %s", assetRec.Body.String())
+	}
+}
+
+func TestAdminMigrateFromOldImportsLegacySnapshot(t *testing.T) {
+	t.Helper()
+
+	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer admin-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"accounts": []map[string]any{
+				{"jwt": "jwt-old-1", "quota": 65},
+				{"jwt": "jwt-old-2", "quota": 18},
+				{"jwt": "", "quota": 18},
+				{"jwt": "jwt-too-low", "quota": 1},
+			},
+		})
+	}))
+	defer legacy.Close()
+
+	pool, _, handler := newTestHandlerWithLegacyBaseURL(legacy.URL)
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/migrate-from-old", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(pool.imported) != 2 {
+		t.Fatalf("expected 2 imported legacy accounts, got %+v", pool.imported)
+	}
+	if pool.imported[0].JWT != "jwt-old-1" || pool.imported[1].JWT != "jwt-old-2" {
+		t.Fatalf("unexpected imported accounts: %+v", pool.imported)
+	}
+	if !strings.Contains(rec.Body.String(), `"requested":4`) || !strings.Contains(rec.Body.String(), `"rejected":2`) {
+		t.Fatalf("expected migration stats in response, got %s", rec.Body.String())
+	}
+}
+
+func TestAdminRetireOldReturnsNotImplementedInsteadOfPretendingSuccess(t *testing.T) {
+	t.Helper()
+
+	_, _, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/retire-old", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "retire-old is not automated yet") {
+		t.Fatalf("expected explicit not implemented response, got %s", rec.Body.String())
 	}
 }

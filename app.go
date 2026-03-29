@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"chataibot2api/protocol"
@@ -31,12 +32,17 @@ type PoolManager interface {
 	StartFillTask(count int) FillTaskSnapshot
 	Prune() PruneSummary
 	ImportAccounts(accounts []*Account) ImportPoolResult
+	ExportAccounts() []ExportedAccount
 }
 
 type App struct {
-	pool    PoolManager
-	backend ImageBackend
-	now     func() time.Time
+	pool             PoolManager
+	backend          ImageBackend
+	now              func() time.Time
+	cfg              Config
+	legacyPoolClient *LegacyPoolClient
+	migrationMu      sync.RWMutex
+	migrationStatus  MigrationStatus
 }
 
 const (
@@ -47,16 +53,108 @@ const (
 var abruptTextEndingPattern = regexp.MustCompile(`[=\(\[\{,\.:+\-/*_'"<>]$`)
 var htmlDocumentStartPattern = regexp.MustCompile(`(?i)<!doctype html>|<html(?:\s|>)`)
 
-func NewApp(pool PoolManager, backend ImageBackend, now func() time.Time) *App {
+func NewApp(pool PoolManager, backend ImageBackend, cfg Config, now func() time.Time) *App {
 	if now == nil {
 		now = time.Now
 	}
 
-	return &App{
-		pool:    pool,
-		backend: backend,
-		now:     now,
+	var legacyPoolClient *LegacyPoolClient
+	if strings.TrimSpace(cfg.LegacyPoolExportBaseURL) != "" {
+		legacyPoolClient = &LegacyPoolClient{
+			BaseURL:    cfg.LegacyPoolExportBaseURL,
+			AdminToken: cfg.AdminToken,
+		}
 	}
+
+	return &App{
+		pool:             pool,
+		backend:          backend,
+		now:              now,
+		cfg:              cfg,
+		legacyPoolClient: legacyPoolClient,
+	}
+}
+
+func (a *App) AdminMeta() AdminMeta {
+	status := a.CurrentMigrationStatus()
+
+	return AdminMeta{
+		InstanceName:         strings.TrimSpace(a.cfg.InstanceName),
+		PublicBaseURL:        strings.TrimSpace(a.cfg.PublicBaseURL),
+		PrimaryPublicBaseURL: strings.TrimSpace(a.cfg.PrimaryPublicBaseURL),
+		IsPrimaryTarget:      isPrimaryTarget(a.cfg.PublicBaseURL, a.cfg.PrimaryPublicBaseURL),
+		Version:              buildVersionString(),
+		LastMigrationAt:      status.FinishedAt,
+	}
+}
+
+func (a *App) CurrentMigrationStatus() MigrationStatus {
+	a.migrationMu.RLock()
+	defer a.migrationMu.RUnlock()
+
+	status := a.migrationStatus
+	return status
+}
+
+func (a *App) setMigrationStatus(status MigrationStatus) {
+	a.migrationMu.Lock()
+	defer a.migrationMu.Unlock()
+	a.migrationStatus = status
+}
+
+func (a *App) MigrateFromLegacy() MigrationStatus {
+	started := a.now().UTC()
+	status := MigrationStatus{
+		StartedAt: &started,
+	}
+
+	if a.legacyPoolClient == nil {
+		status.LastError = "legacy pool export is not configured"
+		finished := a.now().UTC()
+		status.FinishedAt = &finished
+		a.setMigrationStatus(status)
+		return status
+	}
+
+	exported, err := a.legacyPoolClient.ExportAccounts()
+	if err != nil {
+		status.LastError = fmt.Sprintf("failed to export legacy pool: %v", err)
+		finished := a.now().UTC()
+		status.FinishedAt = &finished
+		a.setMigrationStatus(status)
+		return status
+	}
+
+	status.Requested = len(exported)
+	accounts := make([]*Account, 0, len(exported))
+	for _, item := range exported {
+		jwt := strings.TrimSpace(item.JWT)
+		if jwt == "" || item.Quota < 2 {
+			status.Rejected++
+			continue
+		}
+		accounts = append(accounts, &Account{
+			JWT:   jwt,
+			Quota: item.Quota,
+		})
+	}
+
+	result := a.pool.ImportAccounts(accounts)
+	status.Imported = result.Imported
+	status.Duplicates = result.Duplicates
+	status.Overflow = result.Overflow
+	status.TotalCount = result.TotalCount
+
+	finished := a.now().UTC()
+	status.FinishedAt = &finished
+	a.setMigrationStatus(status)
+	return status
+}
+
+func isPrimaryTarget(current string, primary string) bool {
+	current = strings.TrimRight(strings.TrimSpace(current), "/")
+	primary = strings.TrimRight(strings.TrimSpace(primary), "/")
+	return current != "" && primary != "" && strings.EqualFold(current, primary)
 }
 
 func (a *App) Models() []string {

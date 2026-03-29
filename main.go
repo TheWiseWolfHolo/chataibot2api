@@ -107,10 +107,16 @@ func run(args []string, getenv func(string) string) error {
 		fmt.Printf("[!] 号池持久化异常：%s\n", status.LastPersistError)
 	}
 
-	app := NewApp(accountPool, apiClient, time.Now)
+	app := NewApp(accountPool, apiClient, cfg, time.Now)
 	handler := NewServerHandler(cfg, app)
 
 	fmt.Printf("[*] OpenAI 兼容接口启动在 %d 端口，/v1/images/generations /v1/models /v1/chat/completions\n", cfg.Port)
+	if strings.TrimSpace(cfg.InstanceName) != "" {
+		fmt.Printf("[*] 当前实例：%s\n", cfg.InstanceName)
+	}
+	if strings.TrimSpace(cfg.PublicBaseURL) != "" {
+		fmt.Printf("[*] 对外地址：%s\n", cfg.PublicBaseURL)
+	}
 
 	return http.ListenAndServe(fmt.Sprintf(":%d", cfg.Port), handler)
 }

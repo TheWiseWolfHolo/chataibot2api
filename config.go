@@ -23,6 +23,10 @@ type Config struct {
 	MailAdminToken           string
 	APIBearerToken           string
 	AdminToken               string
+	InstanceName             string
+	PublicBaseURL            string
+	PrimaryPublicBaseURL     string
+	LegacyPoolExportBaseURL  string
 }
 
 func LoadConfig(args []string, getenv func(string) string) (Config, error) {
@@ -43,6 +47,10 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	mailTokenFlag := fs.String("token", "", "自建邮箱管理员密码")
 	bearerTokenFlag := fs.String("bearer-token", "", "API 鉴权 Bearer Token")
 	adminTokenFlag := fs.String("admin-token", "", "管理 API 鉴权 Bearer Token")
+	instanceNameFlag := fs.String("instance-name", "", "实例标识")
+	publicBaseURLFlag := fs.String("public-base-url", "", "当前实例对外地址")
+	primaryPublicBaseURLFlag := fs.String("primary-public-base-url", "", "最终主域名")
+	legacyPoolExportBaseURLFlag := fs.String("legacy-pool-export-base-url", "", "旧实例池导出地址")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -63,6 +71,10 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 		MailAdminToken:           strings.TrimSpace(*mailTokenFlag),
 		APIBearerToken:           strings.TrimSpace(*bearerTokenFlag),
 		AdminToken:               strings.TrimSpace(*adminTokenFlag),
+		InstanceName:             strings.TrimSpace(*instanceNameFlag),
+		PublicBaseURL:            strings.TrimSpace(*publicBaseURLFlag),
+		PrimaryPublicBaseURL:     strings.TrimSpace(*primaryPublicBaseURLFlag),
+		LegacyPoolExportBaseURL:  strings.TrimSpace(*legacyPoolExportBaseURLFlag),
 	}
 
 	if value := strings.TrimSpace(getenv("POOL_SIZE")); value != "" {
@@ -140,6 +152,18 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	}
 	if value := strings.TrimSpace(getenv("ADMIN_TOKEN")); value != "" {
 		cfg.AdminToken = value
+	}
+	if value := strings.TrimSpace(getenv("INSTANCE_NAME")); value != "" {
+		cfg.InstanceName = value
+	}
+	if value := strings.TrimSpace(getenv("PUBLIC_BASE_URL")); value != "" {
+		cfg.PublicBaseURL = value
+	}
+	if value := strings.TrimSpace(getenv("PRIMARY_PUBLIC_BASE_URL")); value != "" {
+		cfg.PrimaryPublicBaseURL = value
+	}
+	if value := strings.TrimSpace(getenv("LEGACY_POOL_EXPORT_BASE_URL")); value != "" {
+		cfg.LegacyPoolExportBaseURL = value
 	}
 
 	missing := make([]string, 0, 5)
