@@ -1065,7 +1065,7 @@ Expected:
 Verify:
 
 ```powershell
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api.zeabur.app/v1/admin/pool/export
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api.zeabur.app/v1/admin/pool/export
 ```
 
 Expected:
@@ -1084,8 +1084,8 @@ Verify:
 
 ```powershell
 curl.exe -sS -i https://holo-image-api-eners.zeabur.app/admin
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api-eners.zeabur.app/v1/admin/meta
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api-eners.zeabur.app/v1/admin/migration/status
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api-eners.zeabur.app/v1/admin/meta
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api-eners.zeabur.app/v1/admin/migration/status
 ```
 
 Expected:
@@ -1100,15 +1100,15 @@ Run:
 
 ```powershell
 curl.exe -sS -X POST `
-  -H "Authorization: Bearer sk-878030051Xsz..." `
+  -H "Authorization: Bearer <admin-key>" `
   https://holo-image-api-eners.zeabur.app/v1/admin/migrate-from-old
 ```
 
 Then verify:
 
 ```powershell
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api-eners.zeabur.app/v1/admin/pool
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api-eners.zeabur.app/v1/admin/migration/status
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api-eners.zeabur.app/v1/admin/pool
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api-eners.zeabur.app/v1/admin/migration/status
 ```
 
 Expected:
@@ -1128,7 +1128,7 @@ zeabur service restart --id 69c90776a972bb88a76369ca --env-id 69c558d376bc68ba37
 Verify:
 
 ```powershell
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api-eners.zeabur.app/v1/admin/pool
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api-eners.zeabur.app/v1/admin/pool
 ```
 
 Expected:
@@ -1160,8 +1160,8 @@ Expected:
 Run:
 
 ```powershell
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api.zeabur.app/v1/admin/pool
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api-eners.zeabur.app/v1/admin/pool
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api.zeabur.app/v1/admin/pool
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api-eners.zeabur.app/v1/admin/pool
 ```
 
 Expected:
@@ -1206,8 +1206,8 @@ Run:
 
 ```powershell
 curl.exe -sS -i https://holo-image-api.zeabur.app/healthz
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api.zeabur.app/v1/admin/meta
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api.zeabur.app/v1/admin/pool
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api.zeabur.app/v1/admin/meta
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api.zeabur.app/v1/admin/pool
 ```
 
 Expected:
@@ -1235,8 +1235,8 @@ Run:
 
 ```powershell
 curl.exe -sS -i https://holo-image-api.zeabur.app/admin
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api.zeabur.app/v1/admin/pool
-curl.exe -sS -H "Authorization: Bearer sk-878030051Xsz..." https://holo-image-api.zeabur.app/v1/models
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api.zeabur.app/v1/admin/pool
+curl.exe -sS -H "Authorization: Bearer <admin-key>" https://holo-image-api.zeabur.app/v1/models
 ```
 
 Expected:
@@ -1282,3 +1282,4 @@ Expected:
 - `MigrationStatus` 作为迁移状态结构
 - `LegacyPoolClient.ExportAccounts()` 作为旧实例拉取入口
 - `PoolManager.ExportAccounts()` 作为池导出入口
+
