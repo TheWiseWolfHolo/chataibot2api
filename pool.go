@@ -44,6 +44,13 @@ type PruneSummary struct {
 	Remaining int `json:"remaining"`
 }
 
+type ImportPoolResult struct {
+	Imported   int `json:"imported"`
+	Duplicates int `json:"duplicates"`
+	Overflow   int `json:"overflow"`
+	TotalCount int `json:"total_count"`
+}
+
 type registrationTask struct {
 	snapshot FillTaskSnapshot
 }
@@ -392,6 +399,67 @@ func (p *SimplePool) StartFillTask(count int) FillTaskSnapshot {
 	}()
 
 	return task.snapshot
+}
+
+func (p *SimplePool) ImportAccounts(accounts []*Account) ImportPoolResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	existing := make(map[string]struct{}, len(p.ready)+len(p.reusable))
+	for _, acc := range p.ready {
+		if acc == nil {
+			continue
+		}
+		jwt := strings.TrimSpace(acc.JWT)
+		if jwt == "" {
+			continue
+		}
+		existing[jwt] = struct{}{}
+	}
+	for _, acc := range p.reusable {
+		if acc == nil {
+			continue
+		}
+		jwt := strings.TrimSpace(acc.JWT)
+		if jwt == "" {
+			continue
+		}
+		existing[jwt] = struct{}{}
+	}
+
+	var result ImportPoolResult
+	for _, acc := range accounts {
+		if acc == nil {
+			continue
+		}
+		jwt := strings.TrimSpace(acc.JWT)
+		if jwt == "" {
+			continue
+		}
+		if _, ok := existing[jwt]; ok {
+			result.Duplicates++
+			continue
+		}
+		if len(p.ready)+len(p.reusable) >= p.maxSize {
+			result.Overflow++
+			continue
+		}
+
+		imported := &Account{
+			JWT:   jwt,
+			Quota: acc.Quota,
+		}
+		p.ready = append(p.ready, imported)
+		existing[jwt] = struct{}{}
+		result.Imported++
+	}
+
+	result.TotalCount = len(p.ready) + len(p.reusable)
+	p.reconcileAutoFillLocked()
+	if result.Imported > 0 {
+		p.cond.Broadcast()
+	}
+	return result
 }
 
 func (p *SimplePool) Prune() PruneSummary {

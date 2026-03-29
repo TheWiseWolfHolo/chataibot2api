@@ -14,6 +14,7 @@ func NewServerHandler(cfg Config, app *App) http.Handler {
 	mux.Handle("/v1/chat/completions", BearerAuthMiddleware(cfg.APIBearerToken)(http.HandlerFunc(app.HandleChatCompletions)))
 	mux.Handle("/v1/admin/pool", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolStatus)))
 	mux.Handle("/v1/admin/pool/fill", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolFill)))
+	mux.Handle("/v1/admin/pool/import", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolImport)))
 	mux.Handle("/v1/admin/pool/prune", BearerAuthMiddleware(cfg.AdminToken)(http.HandlerFunc(app.HandleAdminPoolPrune)))
 	return mux
 }
@@ -94,6 +95,82 @@ func (a *App) HandleAdminPoolFill(w http.ResponseWriter, r *http.Request) {
 		"task_id":   task.ID,
 		"requested": task.Requested,
 		"status":    task.Status,
+	})
+}
+
+func (a *App) HandleAdminPoolImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		JWTs         []string `json:"jwts"`
+		Validate     *bool    `json:"validate,omitempty"`
+		MinimumQuota int      `json:"minimum_quota,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "Request body must be valid JSON", "invalid_request_error")
+		return
+	}
+	if len(body.JWTs) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "jwts must contain at least one token", "invalid_request_error")
+		return
+	}
+
+	validate := true
+	if body.Validate != nil {
+		validate = *body.Validate
+	}
+
+	minimumQuota := body.MinimumQuota
+	if minimumQuota <= 0 {
+		minimumQuota = 2
+	}
+
+	seen := make(map[string]struct{}, len(body.JWTs))
+	accounts := make([]*Account, 0, len(body.JWTs))
+	rejected := 0
+	inputDuplicates := 0
+
+	for _, raw := range body.JWTs {
+		jwt := strings.TrimSpace(raw)
+		if jwt == "" {
+			rejected++
+			continue
+		}
+		if _, ok := seen[jwt]; ok {
+			inputDuplicates++
+			continue
+		}
+		seen[jwt] = struct{}{}
+
+		quota := 65
+		if validate {
+			quota = a.backend.GetCount(jwt)
+			if quota < minimumQuota {
+				rejected++
+				continue
+			}
+		}
+
+		accounts = append(accounts, &Account{
+			JWT:   jwt,
+			Quota: quota,
+		})
+	}
+
+	result := a.pool.ImportAccounts(accounts)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"requested":     len(body.JWTs),
+		"validated":     len(accounts),
+		"rejected":      rejected,
+		"duplicates":    inputDuplicates + result.Duplicates,
+		"imported":      result.Imported,
+		"overflow":      result.Overflow,
+		"total_count":   result.TotalCount,
+		"validate":      validate,
+		"minimum_quota": minimumQuota,
 	})
 }
 

@@ -21,6 +21,7 @@ type ImageBackend interface {
 	CreateChatContext(model, title, jwtToken string) (int, error)
 	SendTextMessage(req UpstreamTextMessageRequest, jwtToken string) (TextCompletionResult, error)
 	StreamTextMessage(req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error)
+	GetCount(jwtToken string) int
 }
 
 type PoolManager interface {
@@ -29,6 +30,7 @@ type PoolManager interface {
 	Status() PoolStatus
 	StartFillTask(count int) FillTaskSnapshot
 	Prune() PruneSummary
+	ImportAccounts(accounts []*Account) ImportPoolResult
 }
 
 type App struct {

@@ -18,6 +18,8 @@ type fakePool struct {
 	status          PoolStatus
 	fillTask        FillTaskSnapshot
 	pruneResult     PruneSummary
+	importResult    ImportPoolResult
+	imported        []*Account
 	fillCounts      []int
 }
 
@@ -52,6 +54,18 @@ func (f *fakePool) StartFillTask(count int) FillTaskSnapshot {
 
 func (f *fakePool) Prune() PruneSummary {
 	return f.pruneResult
+}
+
+func (f *fakePool) ImportAccounts(accounts []*Account) ImportPoolResult {
+	f.imported = append([]*Account(nil), accounts...)
+	if f.importResult.TotalCount == 0 {
+		f.importResult = ImportPoolResult{
+			Imported:   len(accounts),
+			Duplicates: 0,
+			TotalCount: len(accounts),
+		}
+	}
+	return f.importResult
 }
 
 type fakeBackend struct {
@@ -89,6 +103,9 @@ type fakeBackend struct {
 	textStreamEvents     []TextStreamEvent
 	textStreamResponse   TextCompletionResult
 	textStreamErr        error
+
+	quotaByJWT    map[string]int
+	getCountCalls []string
 }
 
 func (f *fakeBackend) UpdateUserSettings(_ string, aspectRatio string) bool {
@@ -207,7 +224,13 @@ func (f *fakeBackend) StreamTextMessage(req UpstreamTextMessageRequest, jwtToken
 	return resp, nil
 }
 
-func (f *fakeBackend) GetCount(_ string) int {
+func (f *fakeBackend) GetCount(jwtToken string) int {
+	f.getCountCalls = append(f.getCountCalls, jwtToken)
+	if f.quotaByJWT != nil {
+		if quota, ok := f.quotaByJWT[jwtToken]; ok {
+			return quota
+		}
+	}
 	return 65
 }
 
@@ -1036,5 +1059,61 @@ func TestAdminFillAndPruneEndpointsUsePoolManager(t *testing.T) {
 	}
 	if !strings.Contains(pruneRecorder.Body.String(), `"removed":2`) {
 		t.Fatalf("expected prune summary in response, got %s", pruneRecorder.Body.String())
+	}
+}
+
+func TestAdminPoolImportRequiresAdminTokenAndFiltersInvalidJWTs(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	backend.quotaByJWT = map[string]int{
+		"jwt-good": 17,
+		"jwt-low":  1,
+	}
+	pool.importResult = ImportPoolResult{
+		Imported:   1,
+		Duplicates: 0,
+		TotalCount: 1,
+	}
+
+	unauthReq := httptest.NewRequest(http.MethodPost, "/v1/admin/pool/import", strings.NewReader(`{"jwts":["jwt-good"]}`))
+	unauthReq.Header.Set("Content-Type", "application/json")
+	unauthRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(unauthRecorder, unauthReq)
+	if unauthRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized status, got %d", unauthRecorder.Code)
+	}
+
+	authReq := httptest.NewRequest(http.MethodPost, "/v1/admin/pool/import", strings.NewReader(`{
+		"jwts":[" jwt-good ","","jwt-low","jwt-good"]
+	}`))
+	authReq.Header.Set("Authorization", "Bearer admin-token")
+	authReq.Header.Set("Content-Type", "application/json")
+	authRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(authRecorder, authReq)
+	if authRecorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, authRecorder.Code, authRecorder.Body.String())
+	}
+
+	if len(pool.imported) != 1 {
+		t.Fatalf("expected exactly 1 validated account to reach pool import, got %d", len(pool.imported))
+	}
+	if pool.imported[0].JWT != "jwt-good" || pool.imported[0].Quota != 17 {
+		t.Fatalf("unexpected imported account: %+v", pool.imported[0])
+	}
+	if len(backend.getCountCalls) != 2 {
+		t.Fatalf("expected quota validation for unique non-empty jwts only, got %v", backend.getCountCalls)
+	}
+	if backend.getCountCalls[0] != "jwt-good" || backend.getCountCalls[1] != "jwt-low" {
+		t.Fatalf("unexpected validation order/calls: %v", backend.getCountCalls)
+	}
+	if !strings.Contains(authRecorder.Body.String(), `"requested":4`) {
+		t.Fatalf("expected request count in response, got %s", authRecorder.Body.String())
+	}
+	if !strings.Contains(authRecorder.Body.String(), `"rejected":2`) {
+		t.Fatalf("expected rejected count in response, got %s", authRecorder.Body.String())
+	}
+	if !strings.Contains(authRecorder.Body.String(), `"imported":1`) {
+		t.Fatalf("expected imported count in response, got %s", authRecorder.Body.String())
 	}
 }
