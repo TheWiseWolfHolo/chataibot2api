@@ -13,6 +13,7 @@ var publicToRawModelID = map[string]string{
 	"gpt-image-1":                    "GPT_IMAGE",
 	"gpt-image-1.5":                  "GPT_IMAGE_1_5",
 	"grok-4.1-fast":                  "grok",
+	"grok-imagine-1.0":               "GROK",
 	"ideogram-3":                     "IDEOGRAM",
 	"ideogram-3-turbo":               "IDEOGRAM_TURBO",
 	"qwen-image(lora)":               "QWEN-lora",

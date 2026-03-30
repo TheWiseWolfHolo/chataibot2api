@@ -531,6 +531,12 @@ func TestModelsEndpointListsSupportedModels(t *testing.T) {
 	if _, ok := modelIDs["gpt-4.1"]; !ok {
 		t.Fatalf("expected gpt-4.1 in model list, got %+v", resp.Data)
 	}
+	if _, ok := modelIDs["grok-4.1-fast"]; !ok {
+		t.Fatalf("expected grok-4.1-fast in model list, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["grok-imagine-1.0"]; !ok {
+		t.Fatalf("expected grok-imagine-1.0 in model list, got %+v", resp.Data)
+	}
 	if _, ok := modelIDs["gemini-2.5-flash-image"]; !ok {
 		t.Fatalf("expected gemini-2.5-flash-image in model list, got %+v", resp.Data)
 	}
