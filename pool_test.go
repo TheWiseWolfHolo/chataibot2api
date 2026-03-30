@@ -1,9 +1,12 @@
 package main
 
 import (
+	"net/http"
 	"fmt"
 	"testing"
 	"time"
+
+	"chataibot2api/protocol"
 )
 
 type memoryAccountStore struct {
@@ -437,6 +440,79 @@ func TestSimplePoolReleaseDropsInvalidAccountAndTriggersAutoRefill(t *testing.T)
 	t.Fatalf("expected invalid release to trigger refill, latest status=%+v registerCalls=%d", pool.Status(), registerCalls)
 }
 
+func TestSimplePoolAcquirePrefersDrainCheapQuotaForCheapRequests(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	})
+
+	pool.ready = []*Account{
+		{JWT: "jwt-premium", Quota: 65},
+		{JWT: "jwt-high", Quota: 15},
+		{JWT: "jwt-low", Quota: 7},
+		{JWT: "jwt-drain", Quota: 1},
+	}
+
+	acc := pool.Acquire(1)
+	if acc == nil {
+		t.Fatalf("expected acquired account, got nil")
+	}
+	if acc.JWT != "jwt-drain" {
+		t.Fatalf("expected 1-cost request to prefer drain-cheap account, got %+v", acc)
+	}
+}
+
+func TestSimplePoolAcquirePreservesPremiumForMidCostRequests(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	})
+
+	pool.ready = []*Account{
+		{JWT: "jwt-premium", Quota: 65},
+		{JWT: "jwt-normal-high", Quota: 18},
+		{JWT: "jwt-normal-low", Quota: 7},
+	}
+
+	acc := pool.Acquire(15)
+	if acc == nil {
+		t.Fatalf("expected acquired account, got nil")
+	}
+	if acc.JWT != "jwt-normal-high" {
+		t.Fatalf("expected mid-cost request to avoid premium when 12-39 account exists, got %+v", acc)
+	}
+}
+
+func TestSimplePoolAcquireUsesPremiumForHighCostRequests(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	})
+
+	pool.ready = []*Account{
+		{JWT: "jwt-premium", Quota: 45},
+		{JWT: "jwt-normal-high", Quota: 18},
+		{JWT: "jwt-normal-low", Quota: 7},
+	}
+
+	acc := pool.Acquire(40)
+	if acc == nil {
+		t.Fatalf("expected acquired account, got nil")
+	}
+	if acc.JWT != "jwt-premium" {
+		t.Fatalf("expected high-cost request to use premium account, got %+v", acc)
+	}
+}
+
 func TestSimplePoolRegistrationLoopRespectsSuccessInterval(t *testing.T) {
 	t.Helper()
 
@@ -621,6 +697,37 @@ func TestSimplePoolImportAndPrunePersistAccounts(t *testing.T) {
 	}
 }
 
+func TestSimplePoolPruneKeepsOneQuotaAccount(t *testing.T) {
+	t.Helper()
+
+	store := &memoryAccountStore{}
+	pool := NewSimplePoolWithOptions(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(jwt string) (int, error) {
+		if jwt == "one-left" {
+			return 1, nil
+		}
+		return 65, nil
+	}, PoolOptions{
+		Store: store,
+	})
+
+	result := pool.ImportAccounts([]*Account{
+		{JWT: "one-left", Quota: 65},
+	})
+	if result.Imported != 1 {
+		t.Fatalf("expected 1 import, got %+v", result)
+	}
+
+	summary := pool.Prune()
+	if summary.Removed != 0 {
+		t.Fatalf("expected prune to keep quota=1 account, got %+v", summary)
+	}
+	if len(store.accounts) != 1 || store.accounts[0].JWT != "one-left" || store.accounts[0].Quota != 1 {
+		t.Fatalf("expected persisted store to keep quota=1 account, got %+v", store.accounts)
+	}
+}
+
 func TestSimplePoolReleaseInvalidAccountUpdatesPersistence(t *testing.T) {
 	t.Helper()
 
@@ -649,6 +756,97 @@ func TestSimplePoolReleaseInvalidAccountUpdatesPersistence(t *testing.T) {
 	status := pool.Status()
 	if status.PersistedCount != 0 {
 		t.Fatalf("expected persisted count 0 after invalid release, got %+v", status)
+	}
+}
+
+func TestSimplePoolReleaseKeepsOneQuotaAccountReusableAndExportable(t *testing.T) {
+	t.Helper()
+
+	store := &memoryAccountStore{
+		accounts: []*Account{
+			{JWT: "live", Quota: 65},
+		},
+	}
+	pool := NewSimplePoolWithOptions(1, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 1, nil
+	}, PoolOptions{
+		Store: store,
+	})
+
+	acc := pool.Acquire(1)
+	if acc == nil {
+		t.Fatalf("expected acquired account, got nil")
+	}
+	pool.Release(acc)
+
+	reused := pool.Acquire(1)
+	if reused == nil || reused.JWT != "live" || reused.Quota != 1 {
+		t.Fatalf("expected quota=1 account to remain reusable, got %+v", reused)
+	}
+	pool.Release(reused)
+
+	exported := pool.ExportAccounts()
+	if len(exported) != 1 || exported[0].JWT != "live" || exported[0].Quota != 1 {
+		t.Fatalf("expected quota=1 account to remain exportable, got %+v", exported)
+	}
+}
+
+func TestSimplePoolReleaseRetires401Account(t *testing.T) {
+	t.Helper()
+
+	store := &memoryAccountStore{
+		accounts: []*Account{
+			{JWT: "expired", Quota: 65},
+		},
+	}
+	pool := NewSimplePoolWithOptions(1, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 0, &protocol.UpstreamError{
+			StatusCode: http.StatusUnauthorized,
+			Message:    "expired",
+		}
+	}, PoolOptions{
+		Store: store,
+	})
+
+	acc := pool.Acquire(1)
+	if acc == nil {
+		t.Fatalf("expected acquired account, got nil")
+	}
+	pool.Release(acc)
+
+	if len(store.accounts) != 0 {
+		t.Fatalf("expected 401 account to be retired from persisted store, got %+v", store.accounts)
+	}
+	if pool.Status().TotalCount != 0 {
+		t.Fatalf("expected 401 account to leave live pool, got %+v", pool.Status())
+	}
+}
+
+func TestSimplePoolRestoreAcceptsOneQuotaAccount(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	})
+
+	result, err := pool.RestoreAccounts([]*Account{
+		{JWT: "one-left", Quota: 1},
+		{JWT: "dead", Quota: 0},
+	})
+	if err != nil {
+		t.Fatalf("expected restore to succeed, got %v", err)
+	}
+	if result.Restored != 1 || result.Rejected != 1 {
+		t.Fatalf("expected restore to keep quota=1 and reject quota=0, got %+v", result)
+	}
+	if pool.Status().TotalCount != 1 {
+		t.Fatalf("expected restored total count 1, got %+v", pool.Status())
 	}
 }
 

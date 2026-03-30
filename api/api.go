@@ -317,7 +317,7 @@ func (c *APIClient) GetCount(jwtToken string) (int, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("获取剩余额度失败(HTTP %d)：%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return 0, parseUpstreamError(resp.StatusCode, body)
 	}
 
 	var respData struct {

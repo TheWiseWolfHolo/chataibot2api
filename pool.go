@@ -1,11 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"chataibot2api/protocol"
 )
 
 type PoolStatus struct {
@@ -127,6 +131,16 @@ type PoolOptions struct {
 }
 
 const lowQuotaThreshold = 10
+
+type quotaLane int
+
+const (
+	quotaLaneDead quotaLane = iota
+	quotaLaneDrainCheap
+	quotaLaneNormalLow
+	quotaLaneNormalHigh
+	quotaLanePremium
+)
 
 func NewSimplePool(poolSize int, workerCount int, registrar func() (string, error), quota func(string) (int, error)) *SimplePool {
 	return NewSimplePoolWithOptions(poolSize, workerCount, registrar, quota, PoolOptions{})
@@ -282,24 +296,23 @@ func (p *SimplePool) Acquire(cost int) *Account {
 	defer p.mu.Unlock()
 
 	for {
-		bestIdx := -1
-		for i, acc := range p.reusable {
-			if acc.Quota >= cost {
-				if bestIdx == -1 || acc.Quota < p.reusable[bestIdx].Quota {
-					bestIdx = i
+		acc, fromReusable := p.takeBestAccountLocked(cost)
+		if acc != nil {
+			if fromReusable {
+				for i, candidate := range p.reusable {
+					if candidate == acc {
+						p.reusable = append(p.reusable[:i], p.reusable[i+1:]...)
+						break
+					}
+				}
+			} else {
+				for i, candidate := range p.ready {
+					if candidate == acc {
+						p.ready = append(p.ready[:i], p.ready[i+1:]...)
+						break
+					}
 				}
 			}
-		}
-		if bestIdx != -1 {
-			acc := p.reusable[bestIdx]
-			p.reusable = append(p.reusable[:bestIdx], p.reusable[bestIdx+1:]...)
-			p.borrowed[acc] = strings.TrimSpace(acc.JWT)
-			return acc
-		}
-
-		if len(p.ready) > 0 {
-			acc := p.ready[0]
-			p.ready = append(p.ready[:0], p.ready[1:]...)
 			p.borrowed[acc] = strings.TrimSpace(acc.JWT)
 			return acc
 		}
@@ -310,17 +323,133 @@ func (p *SimplePool) Acquire(cost int) *Account {
 	}
 }
 
+func (p *SimplePool) takeBestAccountLocked(cost int) (*Account, bool) {
+	type candidate struct {
+		acc          *Account
+		fromReusable bool
+		score        int
+	}
+
+	var best *candidate
+	consider := func(acc *Account, fromReusable bool) {
+		if acc == nil || acc.Quota < cost {
+			return
+		}
+		score := quotaLanePriority(cost, acc.Quota)*1000 + acc.Quota
+		if best == nil || score < best.score || (score == best.score && fromReusable && !best.fromReusable) {
+			best = &candidate{
+				acc:          acc,
+				fromReusable: fromReusable,
+				score:        score,
+			}
+		}
+	}
+
+	for _, acc := range p.reusable {
+		consider(acc, true)
+	}
+	for _, acc := range p.ready {
+		consider(acc, false)
+	}
+	if best == nil {
+		return nil, false
+	}
+	return best.acc, best.fromReusable
+}
+
+func quotaLanePriority(cost int, quota int) int {
+	lane := classifyQuotaLane(quota)
+
+	switch {
+	case cost <= 2:
+		switch lane {
+		case quotaLaneDrainCheap:
+			return 0
+		case quotaLaneNormalLow:
+			return 1
+		case quotaLaneNormalHigh:
+			return 2
+		case quotaLanePremium:
+			return 3
+		default:
+			return 9
+		}
+	case cost <= 4:
+		switch lane {
+		case quotaLaneNormalLow:
+			return 0
+		case quotaLaneDrainCheap:
+			return 1
+		case quotaLaneNormalHigh:
+			return 2
+		case quotaLanePremium:
+			return 3
+		default:
+			return 9
+		}
+	case cost <= 11:
+		switch lane {
+		case quotaLaneNormalLow:
+			return 0
+		case quotaLaneNormalHigh:
+			return 1
+		case quotaLanePremium:
+			return 2
+		default:
+			return 9
+		}
+	case cost <= 39:
+		switch lane {
+		case quotaLaneNormalHigh:
+			return 0
+		case quotaLanePremium:
+			return 1
+		default:
+			return 9
+		}
+	default:
+		switch lane {
+		case quotaLanePremium:
+			return 0
+		default:
+			return 9
+		}
+	}
+}
+
+func classifyQuotaLane(quota int) quotaLane {
+	switch {
+	case quota <= 0:
+		return quotaLaneDead
+	case quota <= 3:
+		return quotaLaneDrainCheap
+	case quota <= 11:
+		return quotaLaneNormalLow
+	case quota <= 39:
+		return quotaLaneNormalHigh
+	default:
+		return quotaLanePremium
+	}
+}
+
 func (p *SimplePool) Release(acc *Account) {
 	if acc == nil {
 		return
 	}
 
+	retire := acc.Quota <= 0
 	if p.quota != nil {
 		quota, err := p.quota(acc.JWT)
 		if err != nil {
-			fmt.Printf("[-] 刷新账号额度失败，保留原额度：jwt=%s err=%v\n", strings.TrimSpace(acc.JWT), err)
+			if shouldRetireAccount(quota, err) {
+				acc.Quota = 0
+				retire = true
+			} else {
+				fmt.Printf("[-] 刷新账号额度失败，保留原额度：jwt=%s err=%v\n", strings.TrimSpace(acc.JWT), err)
+			}
 		} else {
 			acc.Quota = quota
+			retire = shouldRetireAccount(quota, nil)
 		}
 	}
 
@@ -328,7 +457,7 @@ func (p *SimplePool) Release(acc *Account) {
 	defer p.mu.Unlock()
 
 	delete(p.borrowed, acc)
-	if acc.Quota < 2 {
+	if retire {
 		p.persistLocked()
 		p.reconcileAutoFillLocked()
 		if p.autoFillActive {
@@ -340,6 +469,18 @@ func (p *SimplePool) Release(acc *Account) {
 	p.reusable = append(p.reusable, acc)
 	p.reconcileAutoFillLocked()
 	p.cond.Broadcast()
+}
+
+func shouldRetireAccount(quota int, err error) bool {
+	if err == nil {
+		return quota <= 0
+	}
+
+	var upstreamErr *protocol.UpstreamError
+	if errors.As(err, &upstreamErr) && upstreamErr != nil {
+		return upstreamErr.StatusCode == http.StatusUnauthorized
+	}
+	return false
 }
 
 func (p *SimplePool) Cooldown(acc *Account, delay time.Duration) {
@@ -555,7 +696,7 @@ func (p *SimplePool) RestoreAccounts(accounts []*Account) (RestorePoolResult, er
 		}
 		seen[jwt] = struct{}{}
 
-		if acc.Quota < 2 {
+		if acc.Quota <= 0 {
 			result.Rejected++
 			continue
 		}
@@ -664,17 +805,24 @@ func (p *SimplePool) Prune() PruneSummary {
 	for _, item := range pooled {
 		summary.Checked++
 		quota := item.account.Quota
+		retire := shouldRetireAccount(quota, nil)
 		if p.quota != nil {
 			refreshedQuota, err := p.quota(item.account.JWT)
 			if err != nil {
-				fmt.Printf("[-] prune 刷新额度失败，跳过删除：jwt=%s err=%v\n", strings.TrimSpace(item.account.JWT), err)
+				if shouldRetireAccount(0, err) {
+					item.account.Quota = 0
+					retire = true
+				} else {
+					fmt.Printf("[-] prune 刷新额度失败，跳过删除：jwt=%s err=%v\n", strings.TrimSpace(item.account.JWT), err)
+				}
 			} else {
 				quota = refreshedQuota
 				item.account.Quota = quota
+				retire = shouldRetireAccount(quota, nil)
 			}
 		}
 
-		if quota < 2 {
+		if retire {
 			summary.Removed++
 			continue
 		}
@@ -841,7 +989,7 @@ func (p *SimplePool) restoreFromStore() {
 		}
 		seen[jwt] = struct{}{}
 
-		if acc.Quota < 2 {
+		if acc.Quota <= 0 {
 			rejected++
 			continue
 		}
@@ -885,7 +1033,7 @@ func (p *SimplePool) snapshotAccountsLocked() []*Account {
 	seen := make(map[string]struct{}, len(result))
 	appendAccount := func(jwt string, quota int) {
 		jwt = strings.TrimSpace(jwt)
-		if jwt == "" || quota < 2 {
+		if jwt == "" || quota <= 0 {
 			return
 		}
 		if _, ok := seen[jwt]; ok {
