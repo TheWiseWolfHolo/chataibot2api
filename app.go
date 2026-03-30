@@ -613,13 +613,17 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 					return mismatchErr
 				}
 			}
-			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") || (strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "") {
+			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") ||
+				(strings.EqualFold(strings.TrimSpace(event.Type), "reasoningContent") && event.ReasoningContent != "") ||
+				(strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "") {
 				streamedAnyEvent = true
 			}
 			if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "" {
 				streamedAnyChunk = true
 			}
-			if !observedLatency && (strings.EqualFold(strings.TrimSpace(event.Type), "botType") || (strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "")) {
+			if !observedLatency && (strings.EqualFold(strings.TrimSpace(event.Type), "botType") ||
+				(strings.EqualFold(strings.TrimSpace(event.Type), "reasoningContent") && event.ReasoningContent != "") ||
+				(strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "")) {
 				observedLatency = true
 				a.observeTextAccount(acc.JWT, attemptStartedAt, nil)
 			}

@@ -26,6 +26,9 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 				}
 				return writer.WriteRole()
 			}
+			if strings.EqualFold(strings.TrimSpace(event.Type), "reasoningContent") {
+				return writer.WriteReasoningDelta(event.ReasoningContent)
+			}
 			if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") {
 				return writer.WriteDelta(event.Delta)
 			}
@@ -204,6 +207,11 @@ func (s *openAITextStreamWriter) WriteDelta(content string) error {
 		return nil
 	}
 	s.start()
+	if !s.wroteRole {
+		if err := s.WriteRole(); err != nil {
+			return err
+		}
+	}
 	s.wroteContent = true
 
 	pieces := splitTextStreamDelta(content)
@@ -221,6 +229,51 @@ func (s *openAITextStreamWriter) WriteDelta(content string) error {
 					"index": 0,
 					"delta": map[string]any{
 						"content": piece,
+					},
+					"finish_reason": nil,
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(s.w, "data: %s\n\n", payload); err != nil {
+			return err
+		}
+		s.flush()
+		if len(pieces) > 1 && index < len(pieces)-1 {
+			time.Sleep(syntheticStreamChunkGap)
+		}
+	}
+	return nil
+}
+
+func (s *openAITextStreamWriter) WriteReasoningDelta(content string) error {
+	if content == "" {
+		return nil
+	}
+	s.start()
+	if !s.wroteRole {
+		if err := s.WriteRole(); err != nil {
+			return err
+		}
+	}
+
+	pieces := splitTextStreamDelta(content)
+	for index, piece := range pieces {
+		if piece == "" {
+			continue
+		}
+		payload, err := json.Marshal(map[string]any{
+			"id":      fmt.Sprintf("chatcmpl-%d", s.created),
+			"object":  "chat.completion.chunk",
+			"created": s.created,
+			"model":   s.model,
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"reasoning_content": piece,
 					},
 					"finish_reason": nil,
 				},

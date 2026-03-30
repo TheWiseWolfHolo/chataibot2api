@@ -16,7 +16,8 @@ const (
 	chataibotAPIBaseURL = "https://chataibot.pro/api"
 	upstreamFromWeb     = 1
 	textContextTimeout  = 5 * time.Second
-	textRequestTimeout  = 10 * time.Second
+	textRequestTimeout  = 20 * time.Second
+	textThinkingTimeout = 45 * time.Second
 	textJobPollInterval = 2 * time.Second
 	textJobPollAttempts = 8
 )
@@ -66,7 +67,7 @@ func (c *APIClient) SendTextMessage(req protocol.TextMessageRequest, jwtToken st
 	}
 
 	slowClient := *c.httpClient
-	slowClient.Timeout = textRequestTimeout
+	slowClient.Timeout = textRequestTimeoutForModel(req.Model)
 
 	resp, err := slowClient.Do(httpReq)
 	if err != nil {
@@ -98,7 +99,7 @@ func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken 
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	slowClient := *c.httpClient
-	slowClient.Timeout = textRequestTimeout
+	slowClient.Timeout = textRequestTimeoutForModel(req.Model)
 
 	resp, err := slowClient.Do(httpReq)
 	if err != nil {
@@ -113,8 +114,9 @@ func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken 
 
 	decoder := json.NewDecoder(resp.Body)
 	var (
-		result  protocol.TextCompletionResult
-		builder strings.Builder
+		result           protocol.TextCompletionResult
+		builder          strings.Builder
+		reasoningBuilder strings.Builder
 	)
 
 	for {
@@ -152,6 +154,17 @@ func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken 
 					return protocol.TextCompletionResult{}, err
 				}
 			}
+		case "reasoningContent":
+			var delta string
+			if err := json.Unmarshal(frame.Data, &delta); err != nil {
+				return protocol.TextCompletionResult{}, fmt.Errorf("failed to parse reasoningContent frame: %w", err)
+			}
+			reasoningBuilder.WriteString(delta)
+			if emit != nil {
+				if err := emit(protocol.TextStreamEvent{Type: frame.Type, ReasoningContent: delta}); err != nil {
+					return protocol.TextCompletionResult{}, err
+				}
+			}
 		case "finalResult":
 			var payload struct {
 				MainText string `json:"mainText"`
@@ -171,10 +184,26 @@ func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken 
 	if strings.TrimSpace(result.Content) == "" {
 		result.Content = strings.TrimSpace(builder.String())
 	}
+	result.ReasoningContent = reasoningBuilder.String()
 	if strings.TrimSpace(result.ChatModel) == "" {
 		result.ChatModel = strings.TrimSpace(req.Model)
 	}
 	return result, nil
+}
+
+func textRequestTimeoutForModel(model string) time.Duration {
+	switch strings.TrimSpace(model) {
+	case "gpt-5.1", "gpt-5.2", "gpt-5.4",
+		"gpt-5.1-high", "gpt-5.2-high", "gpt-5.4-high", "gpt-5.4-pro",
+		"o3", "o3-pro", "o4-mini-deep-research",
+		"qwen3-thinking-2507", "qwen3-max",
+		"gemini-pro", "gemini-3-pro", "gemini-3.1-pro",
+		"claude-3-opus", "claude-4.5-opus", "claude-4.6-opus",
+		"claude-3-sonnet-high", "claude-4.6-sonnet-high":
+		return textThinkingTimeout
+	default:
+		return textRequestTimeout
+	}
 }
 
 func (c *APIClient) pollTextJob(jobID int, jwtToken string) (protocol.TextCompletionResult, error) {

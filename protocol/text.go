@@ -9,15 +9,17 @@ type TextMessageRequest struct {
 
 type TextCompletionResult struct {
 	Content            string
+	ReasoningContent   string
 	ChatModel          string
 	PotentialQuestions []string
 }
 
 type TextStreamEvent struct {
-	Type      string
-	ChatModel string
-	Delta     string
-	FinalText string
+	Type             string
+	ChatModel        string
+	Delta            string
+	ReasoningContent string
+	FinalText        string
 }
 
 type UpstreamError struct {

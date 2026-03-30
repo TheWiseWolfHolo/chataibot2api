@@ -1235,6 +1235,46 @@ func TestChatCompletionsStreamsTextChat(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsStreamsReasoningContent(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	backend.textStreamEvents = []TextStreamEvent{
+		{Type: "botType", ChatModel: "gpt-5.4"},
+		{Type: "reasoningContent", ReasoningContent: "thinking step 1"},
+		{Type: "chunk", Delta: "final answer"},
+	}
+	backend.textStreamResponse = TextCompletionResult{
+		ChatModel: "gpt-5.4",
+		Content:   "final answer",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"stream":true,
+		"messages":[{"role":"user","content":"Solve carefully"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, body)
+	}
+	if !strings.Contains(body, `"reasoning_content":"thinking step 1"`) {
+		t.Fatalf("expected reasoning content delta in stream body, got %s", body)
+	}
+	if !strings.Contains(body, `"content":"final answer"`) {
+		t.Fatalf("expected final answer content delta in stream body, got %s", body)
+	}
+	if strings.Index(body, `"reasoning_content":"thinking step 1"`) > strings.Index(body, `"content":"final answer"`) {
+		t.Fatalf("expected reasoning content to appear before final answer, got %s", body)
+	}
+}
+
 func TestChatCompletionsRetriesStreamingTimeoutBeforeFirstChunk(t *testing.T) {
 	t.Helper()
 
