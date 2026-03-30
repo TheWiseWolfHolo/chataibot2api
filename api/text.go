@@ -15,7 +15,8 @@ import (
 const (
 	chataibotAPIBaseURL = "https://chataibot.pro/api"
 	upstreamFromWeb     = 1
-	textRequestTimeout  = 18 * time.Second
+	textContextTimeout  = 5 * time.Second
+	textRequestTimeout  = 10 * time.Second
 	textJobPollInterval = 2 * time.Second
 	textJobPollAttempts = 8
 )
@@ -31,7 +32,10 @@ func (c *APIClient) CreateChatContext(model, title, jwtToken string) (int, error
 		return 0, err
 	}
 
-	resp, err := c.httpClient.Do(req)
+	fastClient := *c.httpClient
+	fastClient.Timeout = textContextTimeout
+
+	resp, err := fastClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("request failed: %w", err)
 	}

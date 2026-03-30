@@ -18,17 +18,24 @@ OpenAI-compatible image and text proxy with an account-pool admin console, Docke
 
 ## Runtime model notes
 
-- Current chat-route smoke status:
-  - `google-nano-banana`: chat 生图可用，chat 改图可用
-  - `qwen-lora`: chat 生图可用，chat 改图可用
-  - `ideogram`: chat 生图可用，chat 改图不支持
-  - `bytedance-seedream`: chat 改图不支持；本次最小生图 smoke 在 20 秒硬超时内未返回
-  - `gpt-image-1.5`: chat 生图可走，chat 改图受上游会员/账号资格限制
-  - `gpt-image-1.5-high`: chat 生图可走，chat 改图受上游会员/账号资格限制
-- For both `gpt-image-1.5` and `gpt-image-1.5-high`, edit-style requests currently return upstream `403` membership errors on:
-  - `POST /v1/chat/completions` with `image_url`
-  - `POST /v1/images/generations` with `image`
-- The admin catalog therefore marks these GPT image edit capabilities as **subscription-gated**, instead of treating them as unconditional edit support.
+- Current upstream SSR/account facts from `chataibot.pro/app/chat`:
+  - free-tier request budget shown to the user: `65`
+  - `maxMessageLength`: `2500`
+  - default text model: `gpt-4.1-nano`
+  - default image generation model: `gpt-image-1.5`
+  - default image edit model: `google-nano-banana`
+- Current image-route pricing / access hints synced from upstream catalog:
+  - `gpt-image-1.5`: 生图 `12`，改图 `17`，拼图 `2图22 / 3图27 / 4图32`，free 可见
+  - `gpt-image-1.5-high`: 生图 `40`，改图 `50`，拼图 `2图60 / 3图70 / 4图80`，premium / batya / business
+  - `google-nano-banana`: 生图 `15`，改图 `15`，拼图 `2图20 / 3图25 / 4图30`，适合作为默认改图入口
+  - `qwen-lora`: 生图/改图/拼图统一 `2`，适合作为最低成本改图测试
+  - `ideogram`: 仅生图
+  - `bytedance-seedream`: 仅生图
+- Proxy default routing:
+  - model omitted + pure generation → `gpt-image-1.5`
+  - model omitted + single-image edit → `google-nano-banana`
+  - model omitted + multi-image merge → `gpt-image-1.5`
+- Text path now uses model-aware account selection and retries on timeout / EOF / transport resets instead of assuming every account supports every text model equally.
 
 ## Required environment variables
 

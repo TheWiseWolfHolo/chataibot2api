@@ -42,14 +42,18 @@ type AdminCatalog struct {
 }
 
 type AdminModelInfo struct {
-	ID            string `json:"id"`
-	Cost          int    `json:"cost"`
-	Category      string `json:"category"`
-	Internet      bool   `json:"internet,omitempty"`
-	SupportsEdit  bool   `json:"supports_edit,omitempty"`
-	SupportsMerge bool   `json:"supports_merge,omitempty"`
-	EditAccess    string `json:"edit_access,omitempty"`
-	RuntimeNote   string `json:"runtime_note,omitempty"`
+	ID            string   `json:"id"`
+	Cost          int      `json:"cost"`
+	Category      string   `json:"category"`
+	Internet      bool     `json:"internet,omitempty"`
+	SupportsEdit  bool     `json:"supports_edit,omitempty"`
+	SupportsMerge bool     `json:"supports_merge,omitempty"`
+	EditAccess    string   `json:"edit_access,omitempty"`
+	RuntimeNote   string   `json:"runtime_note,omitempty"`
+	AccessTiers   []string `json:"access_tiers,omitempty"`
+	EditCost      int      `json:"edit_cost,omitempty"`
+	MergeCostNote string   `json:"merge_cost_note,omitempty"`
+	RouteAdvice   string   `json:"route_advice,omitempty"`
 }
 
 func buildVersionString() string {

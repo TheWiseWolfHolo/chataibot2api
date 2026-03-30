@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"regexp"
@@ -43,6 +44,12 @@ type textResultObserver interface {
 	ObserveTextResult(jwt string, latency time.Duration, err error)
 }
 
+type textRoutingPool interface {
+	AcquireText(model string, cost int) *Account
+	MarkTextModelUnsupported(jwt string, model string)
+	ClearTextModelUnsupported(jwt string, model string)
+}
+
 type App struct {
 	pool             PoolManager
 	backend          ImageBackend
@@ -54,7 +61,7 @@ type App struct {
 }
 
 const (
-	textRetryAttempts        = 2
+	textRetryAttempts        = 3
 	textRetryCooldown        = 90 * time.Second
 	maxTextContinuationTurns = 2
 	minTruncationContentSize = 1200
@@ -121,10 +128,12 @@ func (a *App) AdminCatalog() AdminCatalog {
 			continue
 		}
 		catalog.TextModels = append(catalog.TextModels, AdminModelInfo{
-			ID:       modelID,
-			Cost:     cfg.Cost,
-			Category: "text",
-			Internet: cfg.Internet,
+			ID:          modelID,
+			Cost:        cfg.Cost,
+			Category:    "text",
+			Internet:    cfg.Internet,
+			AccessTiers: textAccessTiers(modelID),
+			RuntimeNote: textRuntimeNote(modelID),
 		})
 	}
 	sort.Slice(catalog.TextModels, func(i, j int) bool {
@@ -143,6 +152,10 @@ func (a *App) AdminCatalog() AdminCatalog {
 			SupportsMerge: strings.TrimSpace(cfg.MergeMode) != "",
 			EditAccess:    imageEditAccess(modelID),
 			RuntimeNote:   imageRuntimeNote(modelID),
+			AccessTiers:   imageAccessTiers(modelID),
+			EditCost:      imageEditCost(modelID, cfg),
+			MergeCostNote: imageMergeCostNote(modelID, cfg),
+			RouteAdvice:   imageRouteAdvice(modelID),
 		})
 	}
 	sort.Slice(catalog.ImageModels, func(i, j int) bool {
@@ -152,23 +165,116 @@ func (a *App) AdminCatalog() AdminCatalog {
 	return catalog
 }
 
-func imageEditAccess(modelID string) string {
+func textAccessTiers(modelID string) []string {
 	switch strings.TrimSpace(modelID) {
-	case "gpt-image-1.5", "gpt-image-1.5-high":
-		return "subscription-gated"
+	case "gpt-4.1-nano", "gpt-5.4-nano", "gpt-5.4-mini", "claude-3-haiku", "gemini-flash",
+		"gpt-4.1", "o4-mini", "claude-4.6-sonnet", "deepseek", "deepseek-v3.2",
+		"qwen3.5", "qwen3-thinking-2507", "gemini-3-flash", "grok", "gemini-pro",
+		"gpt-5.4", "gpt-5.2", "gpt-5.1", "claude-4.5-haiku", "claude-3-sonnet",
+		"perplexity", "gemini-2-flash-search", "gemini-3-flash-search":
+		return []string{"free", "standard", "premium", "batya", "business"}
+	default:
+		return nil
+	}
+}
+
+func textRuntimeNote(modelID string) string {
+	switch strings.TrimSpace(modelID) {
+	case "gpt-4.1-nano":
+		return "默认文本模型"
+	case "gpt-4.1":
+		return "free 可用，3 点/次"
+	case "claude-4.6-sonnet":
+		return "free 可用，4 点/次"
+	case "perplexity", "gemini-2-flash-search", "gemini-3-flash-search":
+		return "free 可用，带联网"
 	default:
 		return ""
 	}
 }
 
+func imageEditAccess(modelID string) string {
+	switch strings.TrimSpace(modelID) {
+	case "gpt-image-1.5-high":
+		return "subscription-gated"
+	case "gpt-image-1.5":
+		return "cost-higher-than-generate"
+	default:
+		return ""
+	}
+}
+
+func imageAccessTiers(modelID string) []string {
+	switch strings.TrimSpace(modelID) {
+	case "gpt-image-1.5", "ideogram", "google-nano-banana", "qwen-lora", "bytedance-seedream":
+		return []string{"free", "standard", "premium", "batya", "business"}
+	case "gpt-image-1.5-high":
+		return []string{"premium", "batya", "business"}
+	default:
+		return nil
+	}
+}
+
+func imageEditCost(modelID string, cfg ModelConfig) int {
+	if strings.TrimSpace(cfg.EditMode) == "" {
+		return 0
+	}
+	return cfg.EditCost
+}
+
+func imageMergeCostNote(modelID string, cfg ModelConfig) string {
+	if strings.TrimSpace(cfg.MergeMode) == "" {
+		return ""
+	}
+	if len(cfg.MergeCosts) == 0 {
+		if cfg.MergeCost <= 0 {
+			return ""
+		}
+		return fmt.Sprintf("2图起 %d", cfg.MergeCost)
+	}
+
+	parts := make([]string, 0, 3)
+	for _, count := range []int{2, 3, 4} {
+		cost, ok := cfg.MergeCosts[count]
+		if !ok || cost <= 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%d图 %d", count, cost))
+	}
+	return strings.Join(parts, " / ")
+}
+
 func imageRuntimeNote(modelID string) string {
 	switch strings.TrimSpace(modelID) {
-	case "google-nano-banana", "qwen-lora":
-		return "chat改图可用"
-	case "gpt-image-1.5", "gpt-image-1.5-high":
-		return "chat改图需会员"
+	case "google-nano-banana":
+		return "默认改图"
+	case "qwen-lora":
+		return "最低成本改图"
+	case "gpt-image-1.5":
+		return "默认生图；改图更贵"
+	case "gpt-image-1.5-high":
+		return "高细节生图；改图需高级权限"
 	case "ideogram", "bytedance-seedream":
 		return "仅chat生图"
+	default:
+		return ""
+	}
+}
+
+func imageRouteAdvice(modelID string) string {
+	switch strings.TrimSpace(modelID) {
+	case "gpt-image-1.5":
+		return "适合默认生图；若只是改图，优先考虑 google-nano-banana"
+	case "gpt-image-1.5-high":
+		return "适合高细节生图，不建议作为默认改图入口"
+	case "google-nano-banana":
+		return "适合默认改图与低门槛多图操作"
+	case "qwen-lora":
+		return "适合最低成本改图/拼图测试"
+	case "ideogram":
+		return "适合文本排版、Logo、生图"
+	case "bytedance-seedream":
+		return "适合复杂提示生图，不支持改图"
 	default:
 		return ""
 	}
@@ -258,17 +364,17 @@ func (a *App) Generate(req OpenAIImageReq) (OpenAIImageResp, error) {
 		return OpenAIImageResp{}, fmt.Errorf("app dependencies are not configured")
 	}
 
+	isMergeMode := len(req.Images) > 1
+	isEditMode := req.Image != "" || len(req.Images) == 1
+
 	if req.Model == "" {
-		req.Model = "gpt-image-1.5"
+		req.Model = defaultImageModelForRequest(isEditMode, isMergeMode)
 	}
 
 	modelCfg, exists := modelRouter[req.Model]
 	if !exists || modelCfg.Hidden {
 		return OpenAIImageResp{}, newStatusError(http.StatusBadRequest, fmt.Sprintf("Unsupported model: %s", req.Model))
 	}
-
-	isMergeMode := len(req.Images) > 1
-	isEditMode := req.Image != "" || len(req.Images) == 1
 
 	if isMergeMode && modelCfg.MergeMode == "" {
 		return OpenAIImageResp{}, newStatusError(http.StatusBadRequest, fmt.Sprintf("Model '%s' does not support image merging", req.Model))
@@ -279,7 +385,7 @@ func (a *App) Generate(req OpenAIImageReq) (OpenAIImageResp, error) {
 
 	requiredCost := modelCfg.Cost
 	if isMergeMode {
-		requiredCost = modelCfg.MergeCost
+		requiredCost = imageMergeCostForCount(modelCfg, len(req.Images))
 	} else if isEditMode {
 		requiredCost = modelCfg.EditCost
 	}
@@ -318,6 +424,40 @@ func (a *App) Generate(req OpenAIImageReq) (OpenAIImageResp, error) {
 	}, nil
 }
 
+func defaultImageModelForRequest(isEditMode bool, isMergeMode bool) string {
+	switch {
+	case isMergeMode:
+		return "gpt-image-1.5"
+	case isEditMode:
+		return "google-nano-banana"
+	default:
+		return "gpt-image-1.5"
+	}
+}
+
+func imageMergeCostForCount(cfg ModelConfig, imageCount int) int {
+	if len(cfg.MergeCosts) == 0 {
+		return cfg.MergeCost
+	}
+	if cost, ok := cfg.MergeCosts[imageCount]; ok && cost > 0 {
+		return cost
+	}
+	if imageCount <= 2 {
+		if cost, ok := cfg.MergeCosts[2]; ok && cost > 0 {
+			return cost
+		}
+	}
+	if imageCount >= 4 {
+		if cost, ok := cfg.MergeCosts[4]; ok && cost > 0 {
+			return cost
+		}
+	}
+	if cost, ok := cfg.MergeCosts[3]; ok && cost > 0 {
+		return cost
+	}
+	return cfg.MergeCost
+}
+
 func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult, error) {
 	if a.pool == nil || a.backend == nil {
 		return TextCompletionResult{}, fmt.Errorf("app dependencies are not configured")
@@ -329,13 +469,21 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 	}
 
 	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
-		acc := a.pool.Acquire(requiredCost)
+		acc := a.acquireTextAccount(req.Model, requiredCost)
 		attemptStartedAt := time.Now()
 
 		chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
 		if err != nil {
 			a.observeTextAccount(acc.JWT, attemptStartedAt, err)
 			wrapped := wrapTextBackendError("failed to create chat context", err)
+			if isTextModelUnsupportedError(err) {
+				a.markTextModelUnsupported(acc.JWT, req.Model)
+				a.pool.Release(acc)
+				if attempt < textRetryAttempts {
+					continue
+				}
+				return TextCompletionResult{}, wrapped
+			}
 			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
 				a.releaseTextAccount(acc, textRetryCooldown)
 				continue
@@ -349,6 +497,14 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 		if err != nil {
 			a.observeTextAccount(acc.JWT, attemptStartedAt, err)
 			wrapped := wrapTextBackendError("text generation failed", err)
+			if isTextModelUnsupportedError(err) {
+				a.markTextModelUnsupported(acc.JWT, req.Model)
+				a.pool.Release(acc)
+				if attempt < textRetryAttempts {
+					continue
+				}
+				return TextCompletionResult{}, wrapped
+			}
 			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
 				a.releaseTextAccount(acc, textRetryCooldown)
 				continue
@@ -365,11 +521,8 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 		}
 
 		a.observeTextAccount(acc.JWT, attemptStartedAt, nil)
-		resp, err = a.extendTruncatedTextCompletion(messageReq, acc.JWT, resp)
+		a.clearTextModelUnsupported(acc.JWT, req.Model)
 		a.pool.Release(acc)
-		if err != nil {
-			return TextCompletionResult{}, err
-		}
 		return resp, nil
 	}
 
@@ -387,13 +540,21 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 	}
 
 	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
-		acc := a.pool.Acquire(requiredCost)
+		acc := a.acquireTextAccount(req.Model, requiredCost)
 		attemptStartedAt := time.Now()
 
 		chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
 		if err != nil {
 			a.observeTextAccount(acc.JWT, attemptStartedAt, err)
 			wrapped := wrapTextBackendError("failed to create chat context", err)
+			if isTextModelUnsupportedError(err) {
+				a.markTextModelUnsupported(acc.JWT, req.Model)
+				a.pool.Release(acc)
+				if attempt < textRetryAttempts {
+					continue
+				}
+				return TextCompletionResult{}, wrapped
+			}
 			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
 				a.releaseTextAccount(acc, textRetryCooldown)
 				continue
@@ -432,6 +593,14 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 				a.observeTextAccount(acc.JWT, attemptStartedAt, err)
 			}
 			wrapped := wrapTextBackendError("text streaming failed", err)
+			if !streamedAnyEvent && isTextModelUnsupportedError(err) {
+				a.markTextModelUnsupported(acc.JWT, req.Model)
+				a.pool.Release(acc)
+				if attempt < textRetryAttempts {
+					continue
+				}
+				return TextCompletionResult{}, wrapped
+			}
 			if !streamedAnyEvent && shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
 				a.releaseTextAccount(acc, textRetryCooldown)
 				continue
@@ -452,25 +621,17 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 			observedLatency = true
 			a.observeTextAccount(acc.JWT, attemptStartedAt, nil)
 		}
+		a.clearTextModelUnsupported(acc.JWT, req.Model)
 
-		if emit != nil && !streamedAnyChunk && shouldAttemptTextContinuation(messageReq.Text, resp.Content) {
+		if emit != nil && !streamedAnyChunk && strings.TrimSpace(resp.Content) != "" {
 			if err := emit(TextStreamEvent{Type: "chunk", Delta: resp.Content}); err != nil {
 				a.pool.Release(acc)
 				return TextCompletionResult{}, err
 			}
 		}
 
-		result, contErr := a.continueTruncatedTextCompletion(messageReq, acc.JWT, resp, func(delta string) error {
-			if emit == nil || delta == "" {
-				return nil
-			}
-			return emit(TextStreamEvent{Type: "chunk", Delta: delta})
-		})
 		a.pool.Release(acc)
-		if contErr != nil {
-			return TextCompletionResult{}, contErr
-		}
-		return result, nil
+		return resp, nil
 	}
 
 	return TextCompletionResult{}, newTypedStatusError(http.StatusGatewayTimeout, "text streaming timed out after retry", "upstream_timeout")
@@ -827,10 +988,12 @@ func shouldRetryTextBackendError(err error) bool {
 
 	var upstreamErr *protocol.UpstreamError
 	if errors.As(err, &upstreamErr) && upstreamErr != nil {
-		return upstreamErr.StatusCode == http.StatusTooManyRequests || upstreamErr.StatusCode >= http.StatusInternalServerError
+		return upstreamErr.StatusCode == http.StatusUnauthorized ||
+			upstreamErr.StatusCode == http.StatusTooManyRequests ||
+			upstreamErr.StatusCode >= http.StatusInternalServerError
 	}
 
-	return isTextTimeoutError(err)
+	return isTextTimeoutError(err) || isRetryableTextTransportError(err)
 }
 
 func isTextTimeoutError(err error) bool {
@@ -854,6 +1017,44 @@ func isTextTimeoutError(err error) bool {
 		strings.Contains(errLower, "client.timeout exceeded")
 }
 
+func isRetryableTextTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	errLower := strings.ToLower(err.Error())
+	return strings.Contains(errLower, "unexpected eof") ||
+		strings.Contains(errLower, "connection reset by peer") ||
+		strings.Contains(errLower, "broken pipe") ||
+		strings.Contains(errLower, "server closed idle connection") ||
+		strings.Contains(errLower, "stream error") ||
+		strings.Contains(errLower, "transport connection broken")
+}
+
+func isTextModelUnsupportedError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var upstreamErr *protocol.UpstreamError
+	if !errors.As(err, &upstreamErr) || upstreamErr == nil {
+		return false
+	}
+	if upstreamErr.StatusCode != http.StatusForbidden {
+		return false
+	}
+
+	msg := strings.ToLower(strings.TrimSpace(upstreamErr.Message))
+	return strings.Contains(msg, "subscribe") ||
+		strings.Contains(msg, "subscription") ||
+		strings.Contains(msg, "advanced models") ||
+		strings.Contains(msg, "more requests") ||
+		strings.Contains(msg, "productive day")
+}
+
 func (a *App) observeTextAccount(jwtToken string, startedAt time.Time, err error) {
 	if a == nil || a.pool == nil || startedAt.IsZero() {
 		return
@@ -867,6 +1068,34 @@ func (a *App) observeTextAccount(jwtToken string, startedAt time.Time, err error
 		latency = 0
 	}
 	observer.ObserveTextResult(jwtToken, latency, err)
+}
+
+func (a *App) acquireTextAccount(model string, cost int) *Account {
+	if a == nil || a.pool == nil {
+		return nil
+	}
+	if routingPool, ok := a.pool.(textRoutingPool); ok {
+		return routingPool.AcquireText(model, cost)
+	}
+	return a.pool.Acquire(cost)
+}
+
+func (a *App) markTextModelUnsupported(jwtToken string, model string) {
+	if a == nil || a.pool == nil {
+		return
+	}
+	if routingPool, ok := a.pool.(textRoutingPool); ok {
+		routingPool.MarkTextModelUnsupported(jwtToken, model)
+	}
+}
+
+func (a *App) clearTextModelUnsupported(jwtToken string, model string) {
+	if a == nil || a.pool == nil {
+		return
+	}
+	if routingPool, ok := a.pool.(textRoutingPool); ok {
+		routingPool.ClearTextModelUnsupported(jwtToken, model)
+	}
 }
 
 func (a *App) releaseTextAccount(acc *Account, cooldown time.Duration) {

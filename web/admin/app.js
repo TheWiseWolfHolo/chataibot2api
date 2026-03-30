@@ -164,6 +164,19 @@ function modelCapabilityPill(label, tone = '') {
   return `<span class="pill${tone ? ` ${tone}` : ''}">${escapeHtml(label)}</span>`;
 }
 
+function planTierPill(tier) {
+  const key = String(tier || '').trim().toLowerCase();
+  const map = {
+    free: { label: 'Free', tone: 'good' },
+    standard: { label: 'Standard', tone: '' },
+    premium: { label: 'Premium', tone: 'warn' },
+    batya: { label: 'Batya', tone: 'warn' },
+    business: { label: 'Business', tone: 'danger' },
+  };
+  const meta = map[key] || { label: tier || '未知', tone: '' };
+  return modelCapabilityPill(meta.label, meta.tone);
+}
+
 function toneForStatus(status) {
   switch (status) {
     case 'near-empty':
@@ -592,17 +605,28 @@ async function runFill() {
 
 function modelTableRows(models, type) {
   if (!models?.length) {
-    return `<tr><td colspan="4" class="subtle">暂无${type === 'text' ? '文本' : '图片'}模型</td></tr>`;
+    return `<tr><td colspan="5" class="subtle">暂无${type === 'text' ? '文本' : '图片'}模型</td></tr>`;
   }
 
   return models.map((item) => {
     const capabilities = [];
+    const access = Array.isArray(item.access_tiers)
+      ? item.access_tiers.map((tier) => planTierPill(tier))
+      : [];
+    let costDetail = `生图 ${escapeHtml(String(item.cost))}`;
+
     if (type === 'text') {
       capabilities.push(item.internet ? modelCapabilityPill('联网', 'good') : modelCapabilityPill('标准'));
+      if (item.runtime_note) {
+        capabilities.push(modelCapabilityPill(item.runtime_note, item.runtime_note.includes('默认') ? 'good' : ''));
+      }
     } else {
       if (item.edit_access === 'subscription-gated') {
         capabilities.push(modelCapabilityPill('生图', 'good'));
         capabilities.push(modelCapabilityPill('改图需会员', 'warn'));
+      } else if (item.edit_access === 'cost-higher-than-generate') {
+        capabilities.push(modelCapabilityPill('改图更贵', 'warn'));
+        capabilities.push(modelCapabilityPill('仍可改图', 'good'));
       } else {
         capabilities.push(item.supports_edit ? modelCapabilityPill('图生图', 'good') : modelCapabilityPill('仅生图'));
       }
@@ -617,14 +641,26 @@ function modelTableRows(models, type) {
             : '';
         capabilities.push(modelCapabilityPill(item.runtime_note, noteTone));
       }
+      if (item.route_advice) {
+        capabilities.push(modelCapabilityPill(item.route_advice, ''));
+      }
+      const detailParts = [`生图 ${escapeHtml(String(item.cost))}`];
+      if (item.edit_cost) {
+        detailParts.push(`改图 ${escapeHtml(String(item.edit_cost))}`);
+      }
+      if (item.merge_cost_note) {
+        detailParts.push(`拼图 ${escapeHtml(item.merge_cost_note)}`);
+      }
+      costDetail = detailParts.join(' · ');
     }
 
     return `
       <tr>
         <td class="model-name">${escapeHtml(item.id)}</td>
         <td>${type === 'text' ? '文本' : '图片'}</td>
+        <td><div class="model-capabilities">${access.join('')}</div></td>
         <td><div class="model-capabilities">${capabilities.join('')}</div></td>
-        <td>${escapeHtml(String(item.cost))}</td>
+        <td>${costDetail}</td>
       </tr>
     `;
   }).join('');
@@ -642,7 +678,7 @@ function renderModels() {
         <div class="table-scroll">
           <table class="model-table">
             <thead>
-              <tr><th>模型</th><th>类型</th><th>能力</th><th>Cost</th></tr>
+              <tr><th>模型</th><th>类型</th><th>层级</th><th>能力</th><th>价格</th></tr>
             </thead>
             <tbody>${modelTableRows(catalog.text_models, 'text')}</tbody>
           </table>
@@ -656,7 +692,7 @@ function renderModels() {
         <div class="table-scroll">
           <table class="model-table">
             <thead>
-              <tr><th>模型</th><th>类型</th><th>能力</th><th>Cost</th></tr>
+              <tr><th>模型</th><th>类型</th><th>层级</th><th>能力</th><th>价格</th></tr>
             </thead>
             <tbody>${modelTableRows(catalog.image_models, 'image')}</tbody>
           </table>

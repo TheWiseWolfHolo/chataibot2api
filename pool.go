@@ -125,6 +125,7 @@ type SimplePool struct {
 	lastRestoreAt         time.Time
 	pruneShadow           []pooledAccount
 	textHealth            map[string]textAccountHealth
+	textModelUnsupported  map[string]map[string]struct{}
 
 	tasks map[string]*registrationTask
 }
@@ -199,6 +200,7 @@ func NewSimplePoolWithOptions(poolSize int, workerCount int, registrar func() (s
 		autoFillActive:       true,
 		store:                options.Store,
 		textHealth:           make(map[string]textAccountHealth),
+		textModelUnsupported: make(map[string]map[string]struct{}),
 		tasks:                make(map[string]*registrationTask),
 	}
 	pool.cond = sync.NewCond(&pool.mu)
@@ -309,24 +311,10 @@ func (p *SimplePool) Acquire(cost int) *Account {
 	defer p.mu.Unlock()
 
 	for {
-		acc, fromReusable := p.takeBestAccountLocked(cost)
+		acc := p.takeLocked(func() (*Account, bool) {
+			return p.takeBestAccountLocked(cost)
+		})
 		if acc != nil {
-			if fromReusable {
-				for i, candidate := range p.reusable {
-					if candidate == acc {
-						p.reusable = append(p.reusable[:i], p.reusable[i+1:]...)
-						break
-					}
-				}
-			} else {
-				for i, candidate := range p.ready {
-					if candidate == acc {
-						p.ready = append(p.ready[:i], p.ready[i+1:]...)
-						break
-					}
-				}
-			}
-			p.borrowed[acc] = strings.TrimSpace(acc.JWT)
 			return acc
 		}
 
@@ -336,7 +324,57 @@ func (p *SimplePool) Acquire(cost int) *Account {
 	}
 }
 
+func (p *SimplePool) AcquireText(model string, cost int) *Account {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for {
+		acc := p.takeLocked(func() (*Account, bool) {
+			return p.takeBestTextAccountLocked(model, cost)
+		})
+		if acc != nil {
+			return acc
+		}
+
+		p.reconcileAutoFillLocked()
+		p.cond.Broadcast()
+		p.cond.Wait()
+	}
+}
+
+func (p *SimplePool) takeLocked(pick func() (*Account, bool)) *Account {
+	acc, fromReusable := pick()
+	if acc == nil {
+		return nil
+	}
+	if fromReusable {
+		for i, candidate := range p.reusable {
+			if candidate == acc {
+				p.reusable = append(p.reusable[:i], p.reusable[i+1:]...)
+				break
+			}
+		}
+	} else {
+		for i, candidate := range p.ready {
+			if candidate == acc {
+				p.ready = append(p.ready[:i], p.ready[i+1:]...)
+				break
+			}
+		}
+	}
+	p.borrowed[acc] = strings.TrimSpace(acc.JWT)
+	return acc
+}
+
 func (p *SimplePool) takeBestAccountLocked(cost int) (*Account, bool) {
+	return p.takeBestCandidateLocked(cost, "", false)
+}
+
+func (p *SimplePool) takeBestTextAccountLocked(model string, cost int) (*Account, bool) {
+	return p.takeBestCandidateLocked(cost, model, true)
+}
+
+func (p *SimplePool) takeBestCandidateLocked(cost int, model string, textAware bool) (*Account, bool) {
 	type candidate struct {
 		acc          *Account
 		fromReusable bool
@@ -349,11 +387,18 @@ func (p *SimplePool) takeBestAccountLocked(cost int) (*Account, bool) {
 		if acc == nil || acc.Quota < cost {
 			return
 		}
+		if textAware && p.isTextModelUnsupportedLocked(acc.JWT, model) {
+			return
+		}
 		perfPriority, disabled := p.accountPerfPriorityLocked(acc.JWT, now)
 		if disabled {
 			return
 		}
-		score := quotaLanePriority(cost, acc.Quota)*100000 + perfPriority*1000 + acc.Quota
+		basePriority := quotaLanePriority(cost, acc.Quota)
+		if textAware {
+			basePriority = textQuotaLanePriority(cost, acc.Quota)
+		}
+		score := basePriority*100000 + perfPriority*1000 + acc.Quota
 		if best == nil || score < best.score || (score == best.score && fromReusable && !best.fromReusable) {
 			best = &candidate{
 				acc:          acc,
@@ -373,6 +418,100 @@ func (p *SimplePool) takeBestAccountLocked(cost int) (*Account, bool) {
 		return nil, false
 	}
 	return best.acc, best.fromReusable
+}
+
+func textQuotaLanePriority(cost int, quota int) int {
+	lane := classifyQuotaLane(quota)
+
+	switch {
+	case cost <= 4:
+		switch lane {
+		case quotaLaneNormalHigh:
+			return 0
+		case quotaLaneNormalLow:
+			return 1
+		case quotaLanePremium:
+			return 2
+		case quotaLaneDrainCheap:
+			return 3
+		default:
+			return 9
+		}
+	case cost <= 11:
+		switch lane {
+		case quotaLaneNormalHigh:
+			return 0
+		case quotaLanePremium:
+			return 1
+		case quotaLaneNormalLow:
+			return 2
+		default:
+			return 9
+		}
+	default:
+		return quotaLanePriority(cost, quota)
+	}
+}
+
+func (p *SimplePool) MarkTextModelUnsupported(jwt string, model string) {
+	if p == nil {
+		return
+	}
+	jwt = strings.TrimSpace(jwt)
+	model = strings.TrimSpace(model)
+	if jwt == "" || model == "" {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	models, ok := p.textModelUnsupported[jwt]
+	if !ok {
+		models = make(map[string]struct{})
+		p.textModelUnsupported[jwt] = models
+	}
+	models[model] = struct{}{}
+}
+
+func (p *SimplePool) ClearTextModelUnsupported(jwt string, model string) {
+	if p == nil {
+		return
+	}
+	jwt = strings.TrimSpace(jwt)
+	model = strings.TrimSpace(model)
+	if jwt == "" || model == "" {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.clearTextModelUnsupportedLocked(jwt, model)
+}
+
+func (p *SimplePool) clearTextModelUnsupportedLocked(jwt string, model string) {
+	models, ok := p.textModelUnsupported[jwt]
+	if !ok {
+		return
+	}
+	delete(models, model)
+	if len(models) == 0 {
+		delete(p.textModelUnsupported, jwt)
+	}
+}
+
+func (p *SimplePool) isTextModelUnsupportedLocked(jwt string, model string) bool {
+	jwt = strings.TrimSpace(jwt)
+	model = strings.TrimSpace(model)
+	if jwt == "" || model == "" {
+		return false
+	}
+	models, ok := p.textModelUnsupported[jwt]
+	if !ok {
+		return false
+	}
+	_, blocked := models[model]
+	return blocked
 }
 
 func (p *SimplePool) accountPerfPriorityLocked(jwt string, now time.Time) (int, bool) {
@@ -520,6 +659,7 @@ func (p *SimplePool) Release(acc *Account) {
 	delete(p.borrowed, acc)
 	if retire {
 		delete(p.textHealth, strings.TrimSpace(acc.JWT))
+		delete(p.textModelUnsupported, strings.TrimSpace(acc.JWT))
 		p.persistLocked()
 		p.reconcileAutoFillLocked()
 		if p.autoFillActive {
@@ -815,6 +955,7 @@ func (p *SimplePool) RestoreAccounts(accounts []*Account) (RestorePoolResult, er
 	p.reusable = nil
 	p.pruneShadow = nil
 	p.textHealth = make(map[string]textAccountHealth)
+	p.textModelUnsupported = make(map[string]map[string]struct{})
 	result.Restored = len(restored)
 	result.TotalCount = len(p.ready)
 	p.persistLocked()
@@ -934,6 +1075,7 @@ func (p *SimplePool) Prune() PruneSummary {
 
 		if retire {
 			delete(p.textHealth, strings.TrimSpace(item.account.JWT))
+			delete(p.textModelUnsupported, strings.TrimSpace(item.account.JWT))
 			summary.Removed++
 			continue
 		}

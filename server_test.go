@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,10 +16,14 @@ type fakePool struct {
 	acquiredAccount     *Account
 	acquireQueue        []*Account
 	acquiredCost        int
+	acquiredTextModel   string
+	acquiredTextModels  []string
 	acquiredAccounts    []*Account
 	released            *Account
 	releasedAccounts    []*Account
 	cooldowns           []fakeCooldown
+	unsupportedMarks    []fakeTextModelFlag
+	unsupportedClears   []fakeTextModelFlag
 	observedTextResults []fakeTextObservation
 	status              PoolStatus
 	exported            []ExportedAccount
@@ -39,6 +44,11 @@ type fakeCooldown struct {
 	Delay   time.Duration
 }
 
+type fakeTextModelFlag struct {
+	JWT   string
+	Model string
+}
+
 type fakeTextObservation struct {
 	JWT      string
 	Latency  time.Duration
@@ -47,6 +57,16 @@ type fakeTextObservation struct {
 }
 
 func (f *fakePool) Acquire(cost int) *Account {
+	return f.takeAccount(cost)
+}
+
+func (f *fakePool) AcquireText(model string, cost int) *Account {
+	f.acquiredTextModel = model
+	f.acquiredTextModels = append(f.acquiredTextModels, model)
+	return f.takeAccount(cost)
+}
+
+func (f *fakePool) takeAccount(cost int) *Account {
 	f.acquiredCost = cost
 	if len(f.acquireQueue) > 0 {
 		acc := f.acquireQueue[0]
@@ -61,6 +81,14 @@ func (f *fakePool) Acquire(cost int) *Account {
 	acc := &Account{JWT: "fake-jwt", Quota: 65}
 	f.acquiredAccounts = append(f.acquiredAccounts, acc)
 	return acc
+}
+
+func (f *fakePool) MarkTextModelUnsupported(jwt string, model string) {
+	f.unsupportedMarks = append(f.unsupportedMarks, fakeTextModelFlag{JWT: jwt, Model: model})
+}
+
+func (f *fakePool) ClearTextModelUnsupported(jwt string, model string) {
+	f.unsupportedClears = append(f.unsupportedClears, fakeTextModelFlag{JWT: jwt, Model: model})
 }
 
 func (f *fakePool) Release(acc *Account) {
@@ -574,7 +602,7 @@ func TestChatCompletionsWrapsGenerateAsMarkdown(t *testing.T) {
 func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 	t.Helper()
 
-	_, backend, handler := newTestHandler()
+	pool, backend, handler := newTestHandler()
 
 	editReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
 		"model":"google-nano-banana",
@@ -592,6 +620,9 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 	handler.ServeHTTP(editRecorder, editReq)
 	if editRecorder.Code != http.StatusOK {
 		t.Fatalf("expected edit status %d, got %d with body %s", http.StatusOK, editRecorder.Code, editRecorder.Body.String())
+	}
+	if pool.acquiredCost != 15 {
+		t.Fatalf("expected google-nano-banana edit cost 15, got %d", pool.acquiredCost)
 	}
 	if backend.lastEditMode != "edit_google_nano_banana" || backend.lastImage != "data:image/png;base64,abc" {
 		t.Fatalf("unexpected edit call mode=%q image=%q", backend.lastEditMode, backend.lastImage)
@@ -615,6 +646,9 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 	if mergeRecorder.Code != http.StatusOK {
 		t.Fatalf("expected merge status %d, got %d with body %s", http.StatusOK, mergeRecorder.Code, mergeRecorder.Body.String())
 	}
+	if pool.acquiredCost != 20 {
+		t.Fatalf("expected google-nano-banana merge cost 20 for two images, got %d", pool.acquiredCost)
+	}
 	if backend.lastMerge != "merge_google_nano_banana" || len(backend.lastImages) != 2 {
 		t.Fatalf("unexpected merge call mode=%q images=%v", backend.lastMerge, backend.lastImages)
 	}
@@ -623,7 +657,7 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 func TestChatCompletionsSupportsGptImage15EditAndMerge(t *testing.T) {
 	t.Helper()
 
-	_, backend, handler := newTestHandler()
+	pool, backend, handler := newTestHandler()
 
 	editReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
 		"model":"gpt-image-1.5",
@@ -641,6 +675,9 @@ func TestChatCompletionsSupportsGptImage15EditAndMerge(t *testing.T) {
 	handler.ServeHTTP(editRecorder, editReq)
 	if editRecorder.Code != http.StatusOK {
 		t.Fatalf("expected edit status %d, got %d with body %s", http.StatusOK, editRecorder.Code, editRecorder.Body.String())
+	}
+	if pool.acquiredCost != 17 {
+		t.Fatalf("expected gpt-image-1.5 edit cost 17, got %d", pool.acquiredCost)
 	}
 	if backend.lastEditMode != "edit_gpt_1_5" || backend.lastImage != "data:image/png;base64,abc" {
 		t.Fatalf("unexpected gpt-image-1.5 edit call mode=%q image=%q", backend.lastEditMode, backend.lastImage)
@@ -664,8 +701,36 @@ func TestChatCompletionsSupportsGptImage15EditAndMerge(t *testing.T) {
 	if mergeRecorder.Code != http.StatusOK {
 		t.Fatalf("expected merge status %d, got %d with body %s", http.StatusOK, mergeRecorder.Code, mergeRecorder.Body.String())
 	}
+	if pool.acquiredCost != 60 {
+		t.Fatalf("expected gpt-image-1.5-high two-image merge cost 60, got %d", pool.acquiredCost)
+	}
 	if backend.lastMerge != "merge_gpt_1_5_high" || len(backend.lastImages) != 2 {
 		t.Fatalf("unexpected gpt-image-1.5-high merge call mode=%q images=%v", backend.lastMerge, backend.lastImages)
+	}
+}
+
+func TestImagesGenerationsDefaultsToGoogleNanoBananaForEditRequests(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"prompt":"edit this image",
+		"image":"data:image/png;base64,abc"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if pool.acquiredCost != 15 {
+		t.Fatalf("expected default edit route to use google-nano-banana cost 15, got %d", pool.acquiredCost)
+	}
+	if backend.lastEditMode != "edit_google_nano_banana" {
+		t.Fatalf("expected default edit route to use google-nano-banana, got mode=%q", backend.lastEditMode)
 	}
 }
 
@@ -823,7 +888,95 @@ func TestChatCompletionsRetriesTextTimeoutWithFreshAccount(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsAutoContinuesTruncatedCodeResponses(t *testing.T) {
+func TestChatCompletionsRetriesTextEOFWithFreshAccount(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	pool.acquireQueue = []*Account{
+		{JWT: "jwt-eof", Quota: 65},
+		{JWT: "jwt-after-eof", Quota: 65},
+	}
+	backend.textErrors = []error{io.EOF}
+	backend.textResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1",
+		Content:   "hello after eof retry",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1",
+		"messages":[{"role":"user","content":"Say hello."}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.cooldowns) != 1 || pool.cooldowns[0].Account == nil || pool.cooldowns[0].Account.JWT != "jwt-eof" {
+		t.Fatalf("expected EOF account to be cooled down, got %+v", pool.cooldowns)
+	}
+	if len(backend.textRequestJWTs) != 2 || backend.textRequestJWTs[0] != "jwt-eof" || backend.textRequestJWTs[1] != "jwt-after-eof" {
+		t.Fatalf("expected EOF retry to switch accounts, got %+v", backend.textRequestJWTs)
+	}
+	if !strings.Contains(recorder.Body.String(), "hello after eof retry") {
+		t.Fatalf("expected successful EOF retry response, got %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsRetriesUnsupportedTextModelWithFreshAccount(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	pool.acquireQueue = []*Account{
+		{JWT: "jwt-blocked", Quota: 65},
+		{JWT: "jwt-supported", Quota: 65},
+	}
+	backend.textErrors = []error{
+		&protocol.UpstreamError{
+			StatusCode: http.StatusForbidden,
+			Message:    "A productive day! Subscribe to get more requests and access to advanced models",
+			Type:       "forbidden",
+		},
+	}
+	backend.textResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1",
+		Content:   "hello from supported account",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1",
+		"messages":[{"role":"user","content":"Say hello."}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.unsupportedMarks) != 1 || pool.unsupportedMarks[0].JWT != "jwt-blocked" || pool.unsupportedMarks[0].Model != "gpt-4.1" {
+		t.Fatalf("expected blocked account to be marked unsupported for model, got %+v", pool.unsupportedMarks)
+	}
+	if len(pool.cooldowns) != 0 {
+		t.Fatalf("expected unsupported-model retry to release immediately without cooldown, got %+v", pool.cooldowns)
+	}
+	if len(backend.textRequestJWTs) != 2 || backend.textRequestJWTs[0] != "jwt-blocked" || backend.textRequestJWTs[1] != "jwt-supported" {
+		t.Fatalf("expected unsupported-model retry to switch accounts, got %+v", backend.textRequestJWTs)
+	}
+	if len(pool.unsupportedClears) != 1 || pool.unsupportedClears[0].JWT != "jwt-supported" || pool.unsupportedClears[0].Model != "gpt-4.1" {
+		t.Fatalf("expected supported account success to clear unsupported marker, got %+v", pool.unsupportedClears)
+	}
+	if !strings.Contains(recorder.Body.String(), "hello from supported account") {
+		t.Fatalf("expected successful fallback response, got %s", recorder.Body.String())
+	}
+}
+
+func TestChatCompletionsDoesNotAutoContinueTruncatedCodeResponses(t *testing.T) {
 	t.Helper()
 
 	_, backend, handler := newTestHandler()
@@ -853,8 +1006,8 @@ func TestChatCompletionsAutoContinuesTruncatedCodeResponses(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
-	if backend.textCallCount != 2 {
-		t.Fatalf("expected 2 text backend calls for continuation, got %d", backend.textCallCount)
+	if backend.textCallCount != 1 {
+		t.Fatalf("expected single backend call without continuation, got %d", backend.textCallCount)
 	}
 
 	var resp struct {
@@ -868,8 +1021,11 @@ func TestChatCompletionsAutoContinuesTruncatedCodeResponses(t *testing.T) {
 		t.Fatalf("expected JSON response, got error %v with body %s", err, recorder.Body.String())
 	}
 	content := resp.Choices[0].Message.Content
-	if !strings.Contains(content, "prizes: 6") || !strings.HasSuffix(strings.TrimSpace(content), "```") {
-		t.Fatalf("expected stitched continuation content, got %s", recorder.Body.String())
+	if !strings.Contains(content, "ctx.shadowColor =") {
+		t.Fatalf("expected original truncated content to pass through unchanged, got %s", recorder.Body.String())
+	}
+	if strings.Contains(content, "prizes: 6") {
+		t.Fatalf("expected no automatic continuation call, got %s", recorder.Body.String())
 	}
 }
 
@@ -1064,6 +1220,46 @@ func TestChatCompletionsRetriesStreamingTimeoutBeforeFirstChunk(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsRetriesStreamingEOFBeforeFirstChunk(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	pool.acquireQueue = []*Account{
+		{JWT: "jwt-stream-eof", Quota: 65},
+		{JWT: "jwt-stream-ok", Quota: 65},
+	}
+	backend.textStreamErrors = []error{io.EOF}
+	backend.textStreamEvents = []TextStreamEvent{
+		{Type: "botType", ChatModel: "gpt-4.1"},
+		{Type: "chunk", Delta: "stream"},
+	}
+	backend.textStreamResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1",
+		Content:   "stream",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1",
+		"stream":true,
+		"messages":[{"role":"user","content":"Say hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.cooldowns) != 1 || pool.cooldowns[0].Account == nil || pool.cooldowns[0].Account.JWT != "jwt-stream-eof" {
+		t.Fatalf("expected EOF streaming account to be cooled down, got %+v", pool.cooldowns)
+	}
+	if len(backend.textStreamRequestJWTs) != 2 || backend.textStreamRequestJWTs[0] != "jwt-stream-eof" || backend.textStreamRequestJWTs[1] != "jwt-stream-ok" {
+		t.Fatalf("expected streaming EOF retry to switch accounts, got %+v", backend.textStreamRequestJWTs)
+	}
+}
+
 func TestChatCompletionsSplitsLargeSingleStreamChunk(t *testing.T) {
 	t.Helper()
 
@@ -1106,7 +1302,7 @@ func TestChatCompletionsSplitsLargeSingleStreamChunk(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsStreamsTextChatAutoContinuesTruncatedCodeResponses(t *testing.T) {
+func TestChatCompletionsStreamsTruncatedTextWithoutAutoContinuation(t *testing.T) {
 	t.Helper()
 
 	_, backend, handler := newTestHandler()
@@ -1146,14 +1342,14 @@ func TestChatCompletionsStreamsTextChatAutoContinuesTruncatedCodeResponses(t *te
 	if !strings.Contains(recorder.Header().Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("expected SSE content type, got headers=%v body=%s", recorder.Header(), recorder.Body.String())
 	}
-	if backend.textCallCount != 1 {
-		t.Fatalf("expected 1 continuation call for truncated stream, got %d", backend.textCallCount)
+	if backend.textCallCount != 0 {
+		t.Fatalf("expected no continuation call for truncated stream, got %d", backend.textCallCount)
 	}
 	if !strings.Contains(recorder.Body.String(), "ctx.shadowColor =") {
 		t.Fatalf("expected truncated stream prefix to be preserved, got %s", recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "prizes: 6") {
-		t.Fatalf("expected continuation delta in stream body, got %s", recorder.Body.String())
+	if strings.Contains(recorder.Body.String(), "prizes: 6") {
+		t.Fatalf("expected no streamed continuation delta, got %s", recorder.Body.String())
 	}
 	if !strings.Contains(recorder.Body.String(), "[DONE]") {
 		t.Fatalf("expected [DONE] in stream body, got %s", recorder.Body.String())
@@ -1733,20 +1929,35 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"gpt-4.1"`) {
 		t.Fatalf("expected text model in catalog, got %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"access_tiers":["free","standard","premium","batya","business"]`) {
+		t.Fatalf("expected access tiers metadata in catalog, got %s", rec.Body.String())
+	}
 	if !strings.Contains(rec.Body.String(), `"gpt-image-1.5"`) {
 		t.Fatalf("expected image model in catalog, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"edit_access":"cost-higher-than-generate"`) {
+		t.Fatalf("expected higher-cost edit metadata for gpt-image-1.5, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"edit_access":"subscription-gated"`) {
 		t.Fatalf("expected subscription-gated edit access metadata, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"runtime_note":"chat改图可用"`) {
-		t.Fatalf("expected runtime note for supported edit models, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"edit_cost":17`) {
+		t.Fatalf("expected gpt-image-1.5 edit cost metadata, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"merge_cost_note":"2图 22 / 3图 27 / 4图 32"`) {
+		t.Fatalf("expected merge cost note metadata, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"runtime_note":"默认改图"`) {
+		t.Fatalf("expected runtime note for default edit model, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"runtime_note":"仅chat生图"`) {
 		t.Fatalf("expected runtime note for generate-only models, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"runtime_note":"chat改图需会员"`) {
-		t.Fatalf("expected runtime note for subscription-gated models, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"runtime_note":"高细节生图；改图需高级权限"`) {
+		t.Fatalf("expected runtime note for premium-gated high model, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"route_advice":"适合默认生图；若只是改图，优先考虑 google-nano-banana"`) {
+		t.Fatalf("expected route advice metadata, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"low_quota_threshold":10`) {
 		t.Fatalf("expected low quota threshold metadata, got %s", rec.Body.String())

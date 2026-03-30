@@ -56,25 +56,26 @@ type ImageData struct {
 }
 
 type ModelConfig struct {
-	Provider  string
-	Version   string
-	Cost      int
-	EditMode  string
-	EditCost  int
-	MergeMode string
-	MergeCost int
-	Hidden    bool
+	Provider   string
+	Version    string
+	Cost       int
+	EditMode   string
+	EditCost   int
+	MergeMode  string
+	MergeCost  int
+	MergeCosts map[int]int
+	Hidden     bool
 }
 
 var modelRouter = map[string]ModelConfig{
-	"gpt-image-1.5":          {Provider: "GPT_IMAGE_1_5", Version: "", Cost: 12, EditMode: "edit_gpt_1_5", EditCost: 12, MergeMode: "merge_gpt_1_5", MergeCost: 12},
-	"gpt-image-1.5-high":     {Provider: "GPT_IMAGE_1_5_HIGH", Version: "", Cost: 40, EditMode: "edit_gpt_1_5_high", EditCost: 40, MergeMode: "merge_gpt_1_5_high", MergeCost: 40},
+	"gpt-image-1.5":          {Provider: "GPT_IMAGE_1_5", Version: "", Cost: 12, EditMode: "edit_gpt_1_5", EditCost: 17, MergeMode: "merge_gpt_1_5", MergeCost: 22, MergeCosts: map[int]int{2: 22, 3: 27, 4: 32}},
+	"gpt-image-1.5-high":     {Provider: "GPT_IMAGE_1_5_HIGH", Version: "", Cost: 40, EditMode: "edit_gpt_1_5_high", EditCost: 50, MergeMode: "merge_gpt_1_5_high", MergeCost: 60, MergeCosts: map[int]int{2: 60, 3: 70, 4: 80}},
 	"ideogram":               {Provider: "IDEOGRAM", Version: "", Cost: 8},
-	"google-nano-banana-pro": {Provider: "GOOGLE", Version: "nano-banana-pro", Cost: 60, EditMode: "edit_google_nano_banana_pro", EditCost: 60, MergeMode: "merge_google_nano_banana_pro", MergeCost: 60, Hidden: true},
-	"google-nano-banana":     {Provider: "GOOGLE", Version: "nano-banana", Cost: 15, EditMode: "edit_google_nano_banana", EditCost: 15, MergeMode: "merge_google_nano_banana", MergeCost: 15},
-	"google-nano-banana-2":   {Provider: "GOOGLE", Version: "nano-banana-2", Cost: 30, EditMode: "edit_google_nano_banana_2", EditCost: 30, MergeMode: "merge_google_nano_banana_2", MergeCost: 30, Hidden: true},
+	"google-nano-banana-pro": {Provider: "GOOGLE", Version: "nano-banana-pro", Cost: 60, EditMode: "edit_google_nano_banana_pro", EditCost: 60, MergeMode: "merge_google_nano_banana_pro", MergeCost: 70, MergeCosts: map[int]int{2: 70, 3: 80, 4: 90}, Hidden: true},
+	"google-nano-banana":     {Provider: "GOOGLE", Version: "nano-banana", Cost: 15, EditMode: "edit_google_nano_banana", EditCost: 15, MergeMode: "merge_google_nano_banana", MergeCost: 20, MergeCosts: map[int]int{2: 20, 3: 25, 4: 30}},
+	"google-nano-banana-2":   {Provider: "GOOGLE", Version: "nano-banana-2", Cost: 30, EditMode: "edit_google_nano_banana_2", EditCost: 30, MergeMode: "merge_google_nano_banana_2", MergeCost: 40, MergeCosts: map[int]int{2: 40, 3: 50, 4: 60}, Hidden: true},
 	"midjourney-7":           {Provider: "MIDJOURNEY", Version: "7", Cost: 20, Hidden: true},
-	"qwen-lora":              {Provider: "QWEN", Version: "lora", Cost: 2, EditMode: "edit_qwen_lora", EditCost: 2, MergeMode: "merge_qwen_lora", MergeCost: 2},
+	"qwen-lora":              {Provider: "QWEN", Version: "lora", Cost: 2, EditMode: "edit_qwen_lora", EditCost: 2, MergeMode: "merge_qwen_lora", MergeCost: 2, MergeCosts: map[int]int{2: 2, 3: 2, 4: 2}},
 	"bytedance-seedream":     {Provider: "BYTEDANCE", Version: "seedream-5-lite", Cost: 14},
 }
 

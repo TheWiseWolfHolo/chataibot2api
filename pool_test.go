@@ -513,6 +513,54 @@ func TestSimplePoolAcquireUsesPremiumForHighCostRequests(t *testing.T) {
 	}
 }
 
+func TestSimplePoolAcquireTextPrefersHigherQuotaForCheapRequests(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	})
+
+	pool.ready = []*Account{
+		{JWT: "jwt-premium", Quota: 65},
+		{JWT: "jwt-high", Quota: 15},
+		{JWT: "jwt-low", Quota: 7},
+		{JWT: "jwt-drain", Quota: 1},
+	}
+
+	acc := pool.AcquireText("gpt-4.1-nano", 1)
+	if acc == nil {
+		t.Fatalf("expected acquired account, got nil")
+	}
+	if acc.JWT != "jwt-high" {
+		t.Fatalf("expected cheap text request to prefer stable mid-tier account, got %+v", acc)
+	}
+}
+
+func TestSimplePoolAcquireTextSkipsUnsupportedModelAccount(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	})
+
+	unsupported := &Account{JWT: "jwt-blocked", Quota: 15}
+	healthy := &Account{JWT: "jwt-healthy", Quota: 15}
+	pool.ready = []*Account{unsupported, healthy}
+	pool.MarkTextModelUnsupported(unsupported.JWT, "gpt-4.1")
+
+	acc := pool.AcquireText("gpt-4.1", 3)
+	if acc == nil {
+		t.Fatalf("expected acquired account, got nil")
+	}
+	if acc.JWT != "jwt-healthy" {
+		t.Fatalf("expected model-blocked account to be skipped, got %+v", acc)
+	}
+}
+
 func TestSimplePoolObserveSlowAccountMarksItAndDeprioritizesIt(t *testing.T) {
 	t.Helper()
 
