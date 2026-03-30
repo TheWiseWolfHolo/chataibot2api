@@ -1,8 +1,8 @@
 package main
 
 import (
-	"net/http"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -510,6 +510,72 @@ func TestSimplePoolAcquireUsesPremiumForHighCostRequests(t *testing.T) {
 	}
 	if acc.JWT != "jwt-premium" {
 		t.Fatalf("expected high-cost request to use premium account, got %+v", acc)
+	}
+}
+
+func TestSimplePoolObserveSlowAccountMarksItAndDeprioritizesIt(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	})
+
+	slow := &Account{JWT: "jwt-slow", Quota: 18}
+	fast := &Account{JWT: "jwt-fast", Quota: 18}
+	pool.ready = []*Account{slow, fast}
+
+	pool.ObserveTextResult(slow.JWT, 9*time.Second, nil)
+
+	rows := pool.AdminQuotaRows()
+	rowByJWT := map[string]AdminQuotaRow{}
+	for _, row := range rows {
+		rowByJWT[row.JWT] = row
+	}
+	if rowByJWT["jwt-slow"].PerfLabel != "慢号" {
+		t.Fatalf("expected slow account to be marked 慢号, got %+v", rowByJWT["jwt-slow"])
+	}
+	if rowByJWT["jwt-slow"].LastLatencyMs < 9000 {
+		t.Fatalf("expected slow account latency to be recorded, got %+v", rowByJWT["jwt-slow"])
+	}
+
+	acc := pool.Acquire(1)
+	if acc == nil || acc.JWT != "jwt-fast" {
+		t.Fatalf("expected healthy account to be preferred over marked slow account, got %+v", acc)
+	}
+}
+
+func TestSimplePoolObserveTimeoutIsolatesAccountTemporarily(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(_ string) (int, error) {
+		return 65, nil
+	})
+
+	slow := &Account{JWT: "jwt-timeout", Quota: 18}
+	fast := &Account{JWT: "jwt-fast", Quota: 18}
+	pool.ready = []*Account{slow, fast}
+
+	pool.ObserveTextResult(slow.JWT, 18*time.Second, fakeTimeoutError{})
+
+	rows := pool.AdminQuotaRows()
+	rowByJWT := map[string]AdminQuotaRow{}
+	for _, row := range rows {
+		rowByJWT[row.JWT] = row
+	}
+	if rowByJWT["jwt-timeout"].PerfLabel != "超时隔离" {
+		t.Fatalf("expected timeout account to be marked 超时隔离, got %+v", rowByJWT["jwt-timeout"])
+	}
+	if rowByJWT["jwt-timeout"].DisabledUntil == nil || rowByJWT["jwt-timeout"].DisabledUntil.IsZero() {
+		t.Fatalf("expected timeout account to have disabled_until, got %+v", rowByJWT["jwt-timeout"])
+	}
+
+	acc := pool.Acquire(1)
+	if acc == nil || acc.JWT != "jwt-fast" {
+		t.Fatalf("expected isolated timeout account to be skipped, got %+v", acc)
 	}
 }
 

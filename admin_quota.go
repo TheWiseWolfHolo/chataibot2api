@@ -11,6 +11,9 @@ type AdminQuotaRow struct {
 	Quota         int        `json:"quota"`
 	Status        string     `json:"status"`
 	PoolBucket    string     `json:"pool_bucket"`
+	PerfLabel     string     `json:"perf_label,omitempty"`
+	LastLatencyMs int        `json:"last_latency_ms,omitempty"`
+	DisabledUntil *time.Time `json:"disabled_until,omitempty"`
 	LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
 }
 

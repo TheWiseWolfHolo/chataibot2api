@@ -39,6 +39,10 @@ type PoolManager interface {
 	ExportAccounts() []ExportedAccount
 }
 
+type textResultObserver interface {
+	ObserveTextResult(jwt string, latency time.Duration, err error)
+}
+
 type App struct {
 	pool             PoolManager
 	backend          ImageBackend
@@ -50,8 +54,8 @@ type App struct {
 }
 
 const (
-	textRetryAttempts       = 2
-	textRetryCooldown       = 90 * time.Second
+	textRetryAttempts        = 2
+	textRetryCooldown        = 90 * time.Second
 	maxTextContinuationTurns = 2
 	minTruncationContentSize = 1200
 )
@@ -326,9 +330,11 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 
 	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
 		acc := a.pool.Acquire(requiredCost)
+		attemptStartedAt := time.Now()
 
 		chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
 		if err != nil {
+			a.observeTextAccount(acc.JWT, attemptStartedAt, err)
 			wrapped := wrapTextBackendError("failed to create chat context", err)
 			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
 				a.releaseTextAccount(acc, textRetryCooldown)
@@ -341,6 +347,7 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 		messageReq.ChatID = chatID
 		resp, err := a.backend.SendTextMessage(messageReq, acc.JWT)
 		if err != nil {
+			a.observeTextAccount(acc.JWT, attemptStartedAt, err)
 			wrapped := wrapTextBackendError("text generation failed", err)
 			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
 				a.releaseTextAccount(acc, textRetryCooldown)
@@ -352,10 +359,12 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 
 		resp, err = validateTextCompletionResult(req.Model, resp)
 		if err != nil {
+			a.observeTextAccount(acc.JWT, attemptStartedAt, err)
 			a.pool.Release(acc)
 			return TextCompletionResult{}, err
 		}
 
+		a.observeTextAccount(acc.JWT, attemptStartedAt, nil)
 		resp, err = a.extendTruncatedTextCompletion(messageReq, acc.JWT, resp)
 		a.pool.Release(acc)
 		if err != nil {
@@ -379,9 +388,11 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 
 	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
 		acc := a.pool.Acquire(requiredCost)
+		attemptStartedAt := time.Now()
 
 		chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
 		if err != nil {
+			a.observeTextAccount(acc.JWT, attemptStartedAt, err)
 			wrapped := wrapTextBackendError("failed to create chat context", err)
 			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
 				a.releaseTextAccount(acc, textRetryCooldown)
@@ -394,6 +405,7 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 		messageReq.ChatID = chatID
 		streamedAnyChunk := false
 		streamedAnyEvent := false
+		observedLatency := false
 		resp, err := a.backend.StreamTextMessage(messageReq, acc.JWT, func(event TextStreamEvent) error {
 			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
 				if mismatchErr := ensureModelMatch(req.Model, event.ChatModel); mismatchErr != nil {
@@ -406,12 +418,19 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 			if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "" {
 				streamedAnyChunk = true
 			}
+			if !observedLatency && (strings.EqualFold(strings.TrimSpace(event.Type), "botType") || (strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "")) {
+				observedLatency = true
+				a.observeTextAccount(acc.JWT, attemptStartedAt, nil)
+			}
 			if emit == nil {
 				return nil
 			}
 			return emit(event)
 		})
 		if err != nil {
+			if !observedLatency {
+				a.observeTextAccount(acc.JWT, attemptStartedAt, err)
+			}
 			wrapped := wrapTextBackendError("text streaming failed", err)
 			if !streamedAnyEvent && shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
 				a.releaseTextAccount(acc, textRetryCooldown)
@@ -423,8 +442,15 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 
 		resp, err = validateTextCompletionResult(req.Model, resp)
 		if err != nil {
+			if !observedLatency {
+				a.observeTextAccount(acc.JWT, attemptStartedAt, err)
+			}
 			a.pool.Release(acc)
 			return TextCompletionResult{}, err
+		}
+		if !observedLatency {
+			observedLatency = true
+			a.observeTextAccount(acc.JWT, attemptStartedAt, nil)
 		}
 
 		if emit != nil && !streamedAnyChunk && shouldAttemptTextContinuation(messageReq.Text, resp.Content) {
@@ -804,6 +830,14 @@ func shouldRetryTextBackendError(err error) bool {
 		return upstreamErr.StatusCode == http.StatusTooManyRequests || upstreamErr.StatusCode >= http.StatusInternalServerError
 	}
 
+	return isTextTimeoutError(err)
+}
+
+func isTextTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+
 	var timeoutErr net.Error
 	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
 		return true
@@ -818,6 +852,21 @@ func shouldRetryTextBackendError(err error) bool {
 		strings.Contains(errLower, "did not complete in time") ||
 		strings.Contains(errLower, "context deadline exceeded") ||
 		strings.Contains(errLower, "client.timeout exceeded")
+}
+
+func (a *App) observeTextAccount(jwtToken string, startedAt time.Time, err error) {
+	if a == nil || a.pool == nil || startedAt.IsZero() {
+		return
+	}
+	observer, ok := a.pool.(textResultObserver)
+	if !ok {
+		return
+	}
+	latency := time.Since(startedAt)
+	if latency < 0 {
+		latency = 0
+	}
+	observer.ObserveTextResult(jwtToken, latency, err)
 }
 
 func (a *App) releaseTextAccount(acc *Account, cooldown time.Duration) {

@@ -177,6 +177,17 @@ function toneForStatus(status) {
   }
 }
 
+function toneForPerfLabel(label) {
+  switch (label) {
+    case '超时隔离':
+      return 'danger';
+    case '慢号':
+      return 'warn';
+    default:
+      return '';
+  }
+}
+
 function maskJWT(jwt) {
   if (!jwt || jwt.length <= 18) {
     return jwt || '—';
@@ -439,15 +450,27 @@ function renderQuotaTable() {
             const statusTone = toneForStatus(row.status);
             const statusLabel = STATUS_LABELS[row.status] || row.status || '未知';
             const jwtDisplay = expanded ? row.jwt : maskJWT(row.jwt);
-            const note = row.probeState === 'live'
-              ? '<small>实时</small>'
-              : row.probeState === 'error'
-                ? `<small>${escapeHtml(row.probeError || '核验失败')}</small>`
-                : '<small>缓存</small>';
+            const notes = [];
+            notes.push(
+              row.probeState === 'live'
+                ? '<small>实时</small>'
+                : row.probeState === 'error'
+                  ? `<small>${escapeHtml(row.probeError || '核验失败')}</small>`
+                  : '<small>缓存</small>'
+            );
+            if (row.last_latency_ms) {
+              notes.push(`<small>文本 ${escapeHtml(String(row.last_latency_ms))}ms</small>`);
+            }
+            if (row.disabled_until) {
+              notes.push(`<small>隔离至 ${escapeHtml(formatDateTime(row.disabled_until))}</small>`);
+            }
+            const perfPill = row.perf_label
+              ? pill(row.perf_label, toneForPerfLabel(row.perf_label))
+              : '';
             return `
               <tr>
                 <td><strong>${escapeHtml(String(row.quota))}</strong></td>
-                <td><div class="model-capabilities">${pill(statusLabel, statusTone)} ${note}</div></td>
+                <td><div class="model-capabilities">${pill(statusLabel, statusTone)} ${perfPill} ${notes.join(' ')}</div></td>
                 <td>
                   <button type="button" class="button ghost quota-jwt-button" style="min-height: 44px; letter-spacing: 0.06em; text-transform: none; font-size: 0.84rem;" onclick="toggleJwtVisibility('${escapeHtml(row.jwt)}')">${escapeHtml(jwtDisplay)}</button>
                 </td>

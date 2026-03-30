@@ -12,30 +12,38 @@ import (
 )
 
 type fakePool struct {
-	acquiredAccount *Account
-	acquireQueue    []*Account
-	acquiredCost    int
-	acquiredAccounts []*Account
-	released        *Account
-	releasedAccounts []*Account
-	cooldowns       []fakeCooldown
-	status          PoolStatus
-	exported        []ExportedAccount
-	adminRows       []AdminQuotaRow
-	fillTask        FillTaskSnapshot
-	pruneResult     PruneSummary
-	importResult    ImportPoolResult
-	restoreResult   RestorePoolResult
-	imported        []*Account
-	restored        []*Account
-	fillCounts      []int
-	pruneCalls      int
-	restoreErr      error
+	acquiredAccount     *Account
+	acquireQueue        []*Account
+	acquiredCost        int
+	acquiredAccounts    []*Account
+	released            *Account
+	releasedAccounts    []*Account
+	cooldowns           []fakeCooldown
+	observedTextResults []fakeTextObservation
+	status              PoolStatus
+	exported            []ExportedAccount
+	adminRows           []AdminQuotaRow
+	fillTask            FillTaskSnapshot
+	pruneResult         PruneSummary
+	importResult        ImportPoolResult
+	restoreResult       RestorePoolResult
+	imported            []*Account
+	restored            []*Account
+	fillCounts          []int
+	pruneCalls          int
+	restoreErr          error
 }
 
 type fakeCooldown struct {
 	Account *Account
 	Delay   time.Duration
+}
+
+type fakeTextObservation struct {
+	JWT      string
+	Latency  time.Duration
+	Err      error
+	TimedOut bool
 }
 
 func (f *fakePool) Acquire(cost int) *Account {
@@ -64,6 +72,15 @@ func (f *fakePool) Cooldown(acc *Account, delay time.Duration) {
 	f.cooldowns = append(f.cooldowns, fakeCooldown{
 		Account: acc,
 		Delay:   delay,
+	})
+}
+
+func (f *fakePool) ObserveTextResult(jwt string, latency time.Duration, err error) {
+	f.observedTextResults = append(f.observedTextResults, fakeTextObservation{
+		JWT:      jwt,
+		Latency:  latency,
+		Err:      err,
+		TimedOut: isTextTimeoutError(err),
 	})
 }
 
@@ -144,23 +161,23 @@ type fakeBackend struct {
 	textContextID    int
 	textContextErr   error
 
-	textRequest    UpstreamTextMessageRequest
-	textRequestJWT string
+	textRequest     UpstreamTextMessageRequest
+	textRequestJWT  string
 	textRequestJWTs []string
-	textResponse   TextCompletionResult
-	textResponses  []TextCompletionResult
-	textErrors     []error
-	textCallCount  int
-	textErr        error
+	textResponse    TextCompletionResult
+	textResponses   []TextCompletionResult
+	textErrors      []error
+	textCallCount   int
+	textErr         error
 
-	textStreamRequest    UpstreamTextMessageRequest
-	textStreamRequestJWT string
+	textStreamRequest     UpstreamTextMessageRequest
+	textStreamRequestJWT  string
 	textStreamRequestJWTs []string
-	textStreamEvents     []TextStreamEvent
-	textStreamResponse   TextCompletionResult
-	textStreamErrors     []error
-	textStreamCallCount  int
-	textStreamErr        error
+	textStreamEvents      []TextStreamEvent
+	textStreamResponse    TextCompletionResult
+	textStreamErrors      []error
+	textStreamCallCount   int
+	textStreamErr         error
 
 	quotaByJWT    map[string]int
 	getCountCalls []string
@@ -792,6 +809,15 @@ func TestChatCompletionsRetriesTextTimeoutWithFreshAccount(t *testing.T) {
 	if len(backend.textRequestJWTs) != 2 || backend.textRequestJWTs[0] != "jwt-timeout" || backend.textRequestJWTs[1] != "jwt-healthy" {
 		t.Fatalf("expected text request retry to switch accounts, got %+v", backend.textRequestJWTs)
 	}
+	if len(pool.observedTextResults) != 2 {
+		t.Fatalf("expected two text observations, got %+v", pool.observedTextResults)
+	}
+	if pool.observedTextResults[0].JWT != "jwt-timeout" || !pool.observedTextResults[0].TimedOut {
+		t.Fatalf("expected first observation to mark timeout account, got %+v", pool.observedTextResults)
+	}
+	if pool.observedTextResults[1].JWT != "jwt-healthy" || pool.observedTextResults[1].Err != nil {
+		t.Fatalf("expected retry winner to be recorded as healthy success, got %+v", pool.observedTextResults)
+	}
 	if !strings.Contains(recorder.Body.String(), "hello after retry") {
 		t.Fatalf("expected successful retry response, got %s", recorder.Body.String())
 	}
@@ -1023,6 +1049,15 @@ func TestChatCompletionsRetriesStreamingTimeoutBeforeFirstChunk(t *testing.T) {
 	}
 	if len(backend.textStreamRequestJWTs) != 2 || backend.textStreamRequestJWTs[0] != "jwt-stream-timeout" || backend.textStreamRequestJWTs[1] != "jwt-stream-healthy" {
 		t.Fatalf("expected streaming retry to switch accounts, got %+v", backend.textStreamRequestJWTs)
+	}
+	if len(pool.observedTextResults) != 2 {
+		t.Fatalf("expected two streaming observations, got %+v", pool.observedTextResults)
+	}
+	if pool.observedTextResults[0].JWT != "jwt-stream-timeout" || !pool.observedTextResults[0].TimedOut {
+		t.Fatalf("expected first streaming observation to mark timeout account, got %+v", pool.observedTextResults)
+	}
+	if pool.observedTextResults[1].JWT != "jwt-stream-healthy" || pool.observedTextResults[1].Err != nil {
+		t.Fatalf("expected second streaming observation to be successful, got %+v", pool.observedTextResults)
 	}
 	if !strings.Contains(recorder.Body.String(), `"content":"stream"`) || !strings.Contains(recorder.Body.String(), "[DONE]") {
 		t.Fatalf("expected successful streamed retry response, got %s", recorder.Body.String())
@@ -1478,10 +1513,11 @@ func TestAdminQuotaSnapshotEndpointReturnsSummaryAndRows(t *testing.T) {
 	t.Helper()
 
 	pool, _, handler := newTestHandler()
+	disabledUntil := time.Unix(1_700_000_600, 0).UTC()
 	pool.adminRows = []AdminQuotaRow{
 		{JWT: "jwt-healthy", Quota: 16, Status: "healthy", PoolBucket: "ready"},
 		{JWT: "jwt-low", Quota: 7, Status: "low", PoolBucket: "reusable"},
-		{JWT: "jwt-near", Quota: 3, Status: "near-empty", PoolBucket: "borrowed"},
+		{JWT: "jwt-near", Quota: 3, Status: "near-empty", PoolBucket: "borrowed", PerfLabel: "超时隔离", LastLatencyMs: 18234, DisabledUntil: &disabledUntil},
 	}
 
 	unauthReq := httptest.NewRequest(http.MethodGet, "/v1/admin/quota/snapshot", nil)
@@ -1521,6 +1557,9 @@ func TestAdminQuotaSnapshotEndpointReturnsSummaryAndRows(t *testing.T) {
 	}
 	if payload.Rows[0].JWT != "jwt-near" || payload.Rows[0].PoolBucket != "borrowed" || payload.Rows[0].Status != "near-empty" {
 		t.Fatalf("expected near-empty row first, got %+v", payload.Rows)
+	}
+	if payload.Rows[0].PerfLabel != "超时隔离" || payload.Rows[0].LastLatencyMs != 18234 || payload.Rows[0].DisabledUntil == nil || !payload.Rows[0].DisabledUntil.Equal(disabledUntil) {
+		t.Fatalf("expected perf metadata on near-empty row, got %+v", payload.Rows[0])
 	}
 	if payload.Rows[1].JWT != "jwt-low" || payload.Rows[1].PoolBucket != "reusable" || payload.Rows[1].Status != "low" {
 		t.Fatalf("expected low row second, got %+v", payload.Rows)

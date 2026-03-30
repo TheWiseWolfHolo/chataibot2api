@@ -83,6 +83,13 @@ type pooledAccount struct {
 	isReusable bool
 }
 
+type textAccountHealth struct {
+	PerfLabel      string
+	LastLatencyMs  int
+	LastObservedAt time.Time
+	DisabledUntil  time.Time
+}
+
 type SimplePool struct {
 	maxSize              int
 	lowWatermark         int
@@ -117,6 +124,7 @@ type SimplePool struct {
 	lastPersistAt         time.Time
 	lastRestoreAt         time.Time
 	pruneShadow           []pooledAccount
+	textHealth            map[string]textAccountHealth
 
 	tasks map[string]*registrationTask
 }
@@ -130,7 +138,11 @@ type PoolOptions struct {
 	Store                AccountStore
 }
 
-const lowQuotaThreshold = 10
+const (
+	lowQuotaThreshold          = 10
+	textSlowThreshold          = 8 * time.Second
+	textTimeoutIsolationWindow = 5 * time.Minute
+)
 
 type quotaLane int
 
@@ -186,6 +198,7 @@ func NewSimplePoolWithOptions(poolSize int, workerCount int, registrar func() (s
 		reusable:             make([]*Account, 0, poolSize),
 		autoFillActive:       true,
 		store:                options.Store,
+		textHealth:           make(map[string]textAccountHealth),
 		tasks:                make(map[string]*registrationTask),
 	}
 	pool.cond = sync.NewCond(&pool.mu)
@@ -331,11 +344,16 @@ func (p *SimplePool) takeBestAccountLocked(cost int) (*Account, bool) {
 	}
 
 	var best *candidate
+	now := time.Now().UTC()
 	consider := func(acc *Account, fromReusable bool) {
 		if acc == nil || acc.Quota < cost {
 			return
 		}
-		score := quotaLanePriority(cost, acc.Quota)*1000 + acc.Quota
+		perfPriority, disabled := p.accountPerfPriorityLocked(acc.JWT, now)
+		if disabled {
+			return
+		}
+		score := quotaLanePriority(cost, acc.Quota)*100000 + perfPriority*1000 + acc.Quota
 		if best == nil || score < best.score || (score == best.score && fromReusable && !best.fromReusable) {
 			best = &candidate{
 				acc:          acc,
@@ -355,6 +373,49 @@ func (p *SimplePool) takeBestAccountLocked(cost int) (*Account, bool) {
 		return nil, false
 	}
 	return best.acc, best.fromReusable
+}
+
+func (p *SimplePool) accountPerfPriorityLocked(jwt string, now time.Time) (int, bool) {
+	if p == nil {
+		return 0, false
+	}
+	health, ok := p.textHealthSnapshotLocked(jwt, now)
+	if !ok {
+		return 0, false
+	}
+	if !health.DisabledUntil.IsZero() && health.DisabledUntil.After(now) {
+		return 0, true
+	}
+	switch strings.TrimSpace(health.PerfLabel) {
+	case "慢号":
+		return 1, false
+	case "超时隔离":
+		return 2, false
+	default:
+		return 0, false
+	}
+}
+
+func (p *SimplePool) textHealthSnapshotLocked(jwt string, now time.Time) (textAccountHealth, bool) {
+	if p == nil {
+		return textAccountHealth{}, false
+	}
+	jwt = strings.TrimSpace(jwt)
+	if jwt == "" {
+		return textAccountHealth{}, false
+	}
+	health, ok := p.textHealth[jwt]
+	if !ok {
+		return textAccountHealth{}, false
+	}
+	if !health.DisabledUntil.IsZero() && !health.DisabledUntil.After(now) {
+		health.DisabledUntil = time.Time{}
+		if strings.TrimSpace(health.PerfLabel) == "超时隔离" {
+			health.PerfLabel = "慢号"
+		}
+		p.textHealth[jwt] = health
+	}
+	return health, true
 }
 
 func quotaLanePriority(cost int, quota int) int {
@@ -458,6 +519,7 @@ func (p *SimplePool) Release(acc *Account) {
 
 	delete(p.borrowed, acc)
 	if retire {
+		delete(p.textHealth, strings.TrimSpace(acc.JWT))
 		p.persistLocked()
 		p.reconcileAutoFillLocked()
 		if p.autoFillActive {
@@ -495,6 +557,49 @@ func (p *SimplePool) Cooldown(acc *Account, delay time.Duration) {
 	time.AfterFunc(delay, func() {
 		p.Release(acc)
 	})
+}
+
+func (p *SimplePool) ObserveTextResult(jwt string, latency time.Duration, err error) {
+	if p == nil {
+		return
+	}
+	jwt = strings.TrimSpace(jwt)
+	if jwt == "" {
+		return
+	}
+	if latency < 0 {
+		latency = 0
+	}
+	lastLatencyMs := int(latency / time.Millisecond)
+	now := time.Now().UTC()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if err == nil && latency < textSlowThreshold {
+		delete(p.textHealth, jwt)
+		return
+	}
+
+	health := p.textHealth[jwt]
+	health.LastObservedAt = now
+	health.LastLatencyMs = lastLatencyMs
+
+	switch {
+	case err == nil:
+		health.PerfLabel = "慢号"
+		health.DisabledUntil = time.Time{}
+	case isTextTimeoutError(err):
+		health.PerfLabel = "超时隔离"
+		health.DisabledUntil = now.Add(textTimeoutIsolationWindow)
+	default:
+		if health.PerfLabel == "" && health.DisabledUntil.IsZero() && health.LastLatencyMs == 0 {
+			delete(p.textHealth, jwt)
+			return
+		}
+	}
+
+	p.textHealth[jwt] = health
 }
 
 func (p *SimplePool) Status() PoolStatus {
@@ -709,6 +814,7 @@ func (p *SimplePool) RestoreAccounts(accounts []*Account) (RestorePoolResult, er
 	p.ready = restored
 	p.reusable = nil
 	p.pruneShadow = nil
+	p.textHealth = make(map[string]textAccountHealth)
 	result.Restored = len(restored)
 	result.TotalCount = len(p.ready)
 	p.persistLocked()
@@ -756,11 +862,15 @@ func (p *SimplePool) AdminQuotaRows() []AdminQuotaRow {
 			return
 		}
 		seen[jwt] = struct{}{}
+		health, _ := p.textHealthSnapshotLocked(jwt, time.Now().UTC())
 		rows = append(rows, AdminQuotaRow{
-			JWT:        jwt,
-			Quota:      quota,
-			Status:     deriveAdminQuotaStatus(quota),
-			PoolBucket: bucket,
+			JWT:           jwt,
+			Quota:         quota,
+			Status:        deriveAdminQuotaStatus(quota),
+			PoolBucket:    bucket,
+			PerfLabel:     strings.TrimSpace(health.PerfLabel),
+			LastLatencyMs: health.LastLatencyMs,
+			DisabledUntil: timePointer(health.DisabledUntil),
 		})
 	}
 
@@ -823,6 +933,7 @@ func (p *SimplePool) Prune() PruneSummary {
 		}
 
 		if retire {
+			delete(p.textHealth, strings.TrimSpace(item.account.JWT))
 			summary.Removed++
 			continue
 		}
@@ -1118,7 +1229,6 @@ func clonePooledAccounts(accounts []pooledAccount) []pooledAccount {
 	}
 	return cloned
 }
-
 
 func (p *SimplePool) persistencePath() string {
 	if p == nil || p.store == nil {
