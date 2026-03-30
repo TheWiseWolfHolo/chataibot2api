@@ -124,9 +124,6 @@ func (a *App) AdminCatalog() AdminCatalog {
 	}
 
 	for modelID, cfg := range textModelRouter {
-		if cfg.Hidden {
-			continue
-		}
 		tiers := textAccessTiers(modelID)
 		catalog.TextModels = append(catalog.TextModels, AdminModelInfo{
 			ID:          modelID,
@@ -143,9 +140,6 @@ func (a *App) AdminCatalog() AdminCatalog {
 	})
 
 	for modelID, cfg := range modelRouter {
-		if cfg.Hidden {
-			continue
-		}
 		tiers := imageAccessTiers(modelID)
 		catalog.ImageModels = append(catalog.ImageModels, AdminModelInfo{
 			ID:            modelID,
@@ -184,6 +178,12 @@ func textAccessTiers(modelID string) []string {
 		"gpt-5.4", "gpt-5.2", "gpt-5.1", "claude-4.5-haiku", "claude-3-sonnet",
 		"perplexity", "gemini-2-flash-search", "gpt-4o-search-preview", "gemini-3-flash-search":
 		return []string{"free", "standard", "premium", "batya", "business"}
+	case "qwen3.5-plus", "qwen3-max", "claude-4.6-sonnet-high", "claude-3-sonnet-high",
+		"gemini-3-pro", "gemini-3.1-pro", "gpt-5.4-high", "gpt-5.2-high", "gpt-5.1-high",
+		"o3", "claude-4.6-opus", "claude-4.5-opus", "perplexity-pro", "o4-mini-deep-research":
+		return []string{"premium", "batya", "business"}
+	case "gpt-5.4-pro", "claude-3-opus", "o3-pro":
+		return []string{"batya", "business"}
 	default:
 		return nil
 	}
@@ -206,9 +206,9 @@ func textRuntimeNote(modelID string) string {
 
 func imageEditAccess(modelID string) string {
 	switch strings.TrimSpace(modelID) {
-	case "GPT_IMAGE_1_5_HIGH":
+	case "GPT_IMAGE_HIGH", "GPT_IMAGE_1_5_HIGH", "GOOGLE-nano-banana-pro":
 		return "subscription-gated"
-	case "GPT_IMAGE_1_5":
+	case "GPT_IMAGE", "GPT_IMAGE_1_5":
 		return "cost-higher-than-generate"
 	default:
 		return ""
@@ -217,9 +217,11 @@ func imageEditAccess(modelID string) string {
 
 func imageAccessTiers(modelID string) []string {
 	switch strings.TrimSpace(modelID) {
-	case "GPT_IMAGE_1_5", "IDEOGRAM", "GOOGLE-nano-banana", "GOOGLE-nano-banana-2", "QWEN-lora", "BYTEDANCE-seedream-5-lite":
+	case "FLUX-schnell", "IDEOGRAM_TURBO", "IDEOGRAM", "FLUX-pro", "QWEN-lora", "GROK", "GPT_IMAGE", "GPT_IMAGE_1_5", "FLUX-ultra", "GOOGLE-nano-banana", "GOOGLE-nano-banana-2", "BYTEDANCE-seedream-4", "BYTEDANCE-seedream-5-lite":
 		return []string{"free", "standard", "premium", "batya", "business"}
-	case "GPT_IMAGE_1_5_HIGH":
+	case "RECRAFT-v3", "MIDJOURNEY-6.1", "MIDJOURNEY-7", "FLUX-kontext-max":
+		return []string{"standard", "premium", "batya", "business"}
+	case "GPT_IMAGE_HIGH", "GPT_IMAGE_1_5_HIGH", "GOOGLE-nano-banana-pro":
 		return []string{"premium", "batya", "business"}
 	default:
 		return nil
@@ -263,12 +265,16 @@ func imageRuntimeNote(modelID string) string {
 		return "free 可用；较 nano-banana 更贵"
 	case "QWEN-lora":
 		return "最低成本改图"
+	case "GPT_IMAGE":
+		return "free 可用；改图更贵"
 	case "GPT_IMAGE_1_5":
 		return "默认生图；改图更贵"
-	case "GPT_IMAGE_1_5_HIGH":
+	case "GPT_IMAGE_HIGH", "GPT_IMAGE_1_5_HIGH", "GOOGLE-nano-banana-pro":
 		return "高细节生图；改图需高级权限"
-	case "IDEOGRAM", "BYTEDANCE-seedream-5-lite":
+	case "FLUX-schnell", "IDEOGRAM_TURBO", "IDEOGRAM", "FLUX-pro", "GROK", "FLUX-ultra", "BYTEDANCE-seedream-4", "BYTEDANCE-seedream-5-lite", "RECRAFT-v3", "MIDJOURNEY-6.1", "MIDJOURNEY-7":
 		return "仅chat生图"
+	case "FLUX-kontext-max":
+		return "高级改图入口"
 	default:
 		return ""
 	}
@@ -276,9 +282,19 @@ func imageRuntimeNote(modelID string) string {
 
 func imageRouteAdvice(modelID string) string {
 	switch strings.TrimSpace(modelID) {
+	case "FLUX-schnell":
+		return "适合最低成本快速生图"
+	case "IDEOGRAM_TURBO":
+		return "适合更快的文本排版生图"
+	case "IDEOGRAM":
+		return "适合文本排版、Logo、生图"
+	case "FLUX-pro", "FLUX-ultra":
+		return "适合 Flux 系列高质量生图"
 	case "GPT_IMAGE_1_5":
 		return "适合默认生图；若只是改图，优先考虑 GOOGLE-nano-banana"
-	case "GPT_IMAGE_1_5_HIGH":
+	case "GPT_IMAGE":
+		return "适合 OpenAI 生图；若只是改图，成本高于 GOOGLE-nano-banana"
+	case "GPT_IMAGE_HIGH", "GPT_IMAGE_1_5_HIGH":
 		return "适合高细节生图，不建议作为默认改图入口"
 	case "GOOGLE-nano-banana":
 		return "适合默认改图与低门槛多图操作"
@@ -286,10 +302,18 @@ func imageRouteAdvice(modelID string) string {
 		return "适合质量优先的免费改图/拼图，但成本高于 nano-banana"
 	case "QWEN-lora":
 		return "适合最低成本改图/拼图测试"
-	case "IDEOGRAM":
-		return "适合文本排版、Logo、生图"
-	case "BYTEDANCE-seedream-5-lite":
+	case "GROK":
+		return "适合 xAI 图像生成"
+	case "BYTEDANCE-seedream-4", "BYTEDANCE-seedream-5-lite":
 		return "适合复杂提示生图，不支持改图"
+	case "RECRAFT-v3":
+		return "适合设计类生图，需付费层级"
+	case "MIDJOURNEY-6.1", "MIDJOURNEY-7":
+		return "适合 Midjourney 风格生图，需付费层级"
+	case "FLUX-kontext-max":
+		return "适合高阶 Flux 改图，需付费层级"
+	case "GOOGLE-nano-banana-pro":
+		return "适合高质量改图/拼图，需付费层级"
 	default:
 		return ""
 	}

@@ -549,6 +549,12 @@ func TestModelsEndpointListsSupportedModels(t *testing.T) {
 	if _, ok := modelIDs["GPT_IMAGE_1_5"]; !ok {
 		t.Fatalf("expected GPT_IMAGE_1_5 in model list, got %+v", resp.Data)
 	}
+	if _, ok := modelIDs["FLUX-schnell"]; !ok {
+		t.Fatalf("expected FLUX-schnell in model list, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["GPT_IMAGE"]; !ok {
+		t.Fatalf("expected GPT_IMAGE in model list, got %+v", resp.Data)
+	}
 	if _, ok := modelIDs["GPT_IMAGE_1_5_HIGH"]; ok {
 		t.Fatalf("expected paid model GPT_IMAGE_1_5_HIGH to be omitted, got %+v", resp.Data)
 	}
@@ -1953,8 +1959,17 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"GOOGLE-nano-banana-2"`) {
 		t.Fatalf("expected GOOGLE-nano-banana-2 in image catalog, got %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"GPT_IMAGE_1_5_HIGH"`) {
+		t.Fatalf("expected GPT_IMAGE_1_5_HIGH in admin catalog, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"gpt-5.4-pro"`) {
+		t.Fatalf("expected paid text model in admin catalog, got %s", rec.Body.String())
+	}
 	if !strings.Contains(rec.Body.String(), `"edit_access":"cost-higher-than-generate"`) {
 		t.Fatalf("expected higher-cost edit metadata for GPT_IMAGE_1_5, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"minimum_tier":"premium"`) {
+		t.Fatalf("expected premium minimum tier metadata in admin catalog, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"edit_cost":17`) {
 		t.Fatalf("expected GPT_IMAGE_1_5 edit cost metadata, got %s", rec.Body.String())

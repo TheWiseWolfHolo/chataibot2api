@@ -68,15 +68,26 @@ type ModelConfig struct {
 }
 
 var modelRouter = map[string]ModelConfig{
-	"GPT_IMAGE_1_5":             {Provider: "GPT_IMAGE_1_5", Version: "", Cost: 12, EditMode: "edit_gpt_1_5", EditCost: 17, MergeMode: "merge_gpt_1_5", MergeCost: 22, MergeCosts: map[int]int{2: 22, 3: 27, 4: 32}},
-	"GPT_IMAGE_1_5_HIGH":        {Provider: "GPT_IMAGE_1_5_HIGH", Version: "", Cost: 40, EditMode: "edit_gpt_1_5_high", EditCost: 50, MergeMode: "merge_gpt_1_5_high", MergeCost: 60, MergeCosts: map[int]int{2: 60, 3: 70, 4: 80}, Hidden: true},
+	"FLUX-schnell":              {Provider: "FLUX", Version: "schnell", Cost: 2},
+	"IDEOGRAM_TURBO":            {Provider: "IDEOGRAM_TURBO", Version: "", Cost: 4},
 	"IDEOGRAM":                  {Provider: "IDEOGRAM", Version: "", Cost: 8},
-	"GOOGLE-nano-banana-pro":    {Provider: "GOOGLE", Version: "nano-banana-pro", Cost: 60, EditMode: "edit_google_nano_banana_pro", EditCost: 60, MergeMode: "merge_google_nano_banana_pro", MergeCost: 70, MergeCosts: map[int]int{2: 70, 3: 80, 4: 90}, Hidden: true},
+	"FLUX-pro":                  {Provider: "FLUX", Version: "pro", Cost: 10},
+	"QWEN-lora":                 {Provider: "QWEN", Version: "lora", Cost: 2, EditMode: "edit_qwen_lora", EditCost: 2, MergeMode: "merge_qwen_lora", MergeCost: 2, MergeCosts: map[int]int{2: 2, 3: 2, 4: 2}},
+	"GROK":                      {Provider: "GROK", Version: "", Cost: 10},
+	"GPT_IMAGE":                 {Provider: "GPT_IMAGE", Version: "", Cost: 15, EditMode: "edit_gpt_image", EditCost: 20, MergeMode: "merge_gpt_image", MergeCost: 25, MergeCosts: map[int]int{2: 25, 3: 30, 4: 35}},
+	"GPT_IMAGE_1_5":             {Provider: "GPT_IMAGE_1_5", Version: "", Cost: 12, EditMode: "edit_gpt_1_5", EditCost: 17, MergeMode: "merge_gpt_1_5", MergeCost: 22, MergeCosts: map[int]int{2: 22, 3: 27, 4: 32}},
+	"FLUX-ultra":                {Provider: "FLUX", Version: "ultra", Cost: 12},
 	"GOOGLE-nano-banana":        {Provider: "GOOGLE", Version: "nano-banana", Cost: 15, EditMode: "edit_google_nano_banana", EditCost: 15, MergeMode: "merge_google_nano_banana", MergeCost: 20, MergeCosts: map[int]int{2: 20, 3: 25, 4: 30}},
 	"GOOGLE-nano-banana-2":      {Provider: "GOOGLE", Version: "nano-banana-2", Cost: 30, EditMode: "edit_google_nano_banana_2", EditCost: 30, MergeMode: "merge_google_nano_banana_2", MergeCost: 40, MergeCosts: map[int]int{2: 40, 3: 50, 4: 60}},
-	"MIDJOURNEY-7":              {Provider: "MIDJOURNEY", Version: "7", Cost: 20, Hidden: true},
-	"QWEN-lora":                 {Provider: "QWEN", Version: "lora", Cost: 2, EditMode: "edit_qwen_lora", EditCost: 2, MergeMode: "merge_qwen_lora", MergeCost: 2, MergeCosts: map[int]int{2: 2, 3: 2, 4: 2}},
+	"BYTEDANCE-seedream-4":      {Provider: "BYTEDANCE", Version: "seedream-4", Cost: 12},
 	"BYTEDANCE-seedream-5-lite": {Provider: "BYTEDANCE", Version: "seedream-5-lite", Cost: 14},
+	"RECRAFT-v3":                {Provider: "RECRAFT", Version: "v3", Cost: 20, Hidden: true},
+	"MIDJOURNEY-6.1":            {Provider: "MIDJOURNEY", Version: "6.1", Cost: 20, Hidden: true},
+	"MIDJOURNEY-7":              {Provider: "MIDJOURNEY", Version: "7", Cost: 20, Hidden: true},
+	"FLUX-kontext-max":          {Provider: "FLUX", Version: "kontext-max", Cost: 30, EditMode: "edit_flux_kontext_max", EditCost: 30, Hidden: true},
+	"GPT_IMAGE_HIGH":            {Provider: "GPT_IMAGE_HIGH", Version: "", Cost: 50, EditMode: "edit_gpt_image_high", EditCost: 60, MergeMode: "merge_gpt_image_high", MergeCost: 70, MergeCosts: map[int]int{2: 70, 3: 80, 4: 90}, Hidden: true},
+	"GPT_IMAGE_1_5_HIGH":        {Provider: "GPT_IMAGE_1_5_HIGH", Version: "", Cost: 40, EditMode: "edit_gpt_1_5_high", EditCost: 50, MergeMode: "merge_gpt_1_5_high", MergeCost: 60, MergeCosts: map[int]int{2: 60, 3: 70, 4: 80}, Hidden: true},
+	"GOOGLE-nano-banana-pro":    {Provider: "GOOGLE", Version: "nano-banana-pro", Cost: 60, EditMode: "edit_google_nano_banana_pro", EditCost: 60, MergeMode: "merge_google_nano_banana_pro", MergeCost: 70, MergeCosts: map[int]int{2: 70, 3: 80, 4: 90}, Hidden: true},
 }
 
 func main() {
