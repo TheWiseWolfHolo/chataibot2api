@@ -13,8 +13,12 @@ import (
 
 type fakePool struct {
 	acquiredAccount *Account
+	acquireQueue    []*Account
 	acquiredCost    int
+	acquiredAccounts []*Account
 	released        *Account
+	releasedAccounts []*Account
+	cooldowns       []fakeCooldown
 	status          PoolStatus
 	exported        []ExportedAccount
 	adminRows       []AdminQuotaRow
@@ -29,16 +33,38 @@ type fakePool struct {
 	restoreErr      error
 }
 
+type fakeCooldown struct {
+	Account *Account
+	Delay   time.Duration
+}
+
 func (f *fakePool) Acquire(cost int) *Account {
 	f.acquiredCost = cost
+	if len(f.acquireQueue) > 0 {
+		acc := f.acquireQueue[0]
+		f.acquireQueue = f.acquireQueue[1:]
+		f.acquiredAccounts = append(f.acquiredAccounts, acc)
+		return acc
+	}
 	if f.acquiredAccount != nil {
+		f.acquiredAccounts = append(f.acquiredAccounts, f.acquiredAccount)
 		return f.acquiredAccount
 	}
-	return &Account{JWT: "fake-jwt", Quota: 65}
+	acc := &Account{JWT: "fake-jwt", Quota: 65}
+	f.acquiredAccounts = append(f.acquiredAccounts, acc)
+	return acc
 }
 
 func (f *fakePool) Release(acc *Account) {
 	f.released = acc
+	f.releasedAccounts = append(f.releasedAccounts, acc)
+}
+
+func (f *fakePool) Cooldown(acc *Account, delay time.Duration) {
+	f.cooldowns = append(f.cooldowns, fakeCooldown{
+		Account: acc,
+		Delay:   delay,
+	})
 }
 
 func (f *fakePool) Status() PoolStatus {
@@ -114,20 +140,26 @@ type fakeBackend struct {
 	textContextModel string
 	textContextTitle string
 	textContextJWT   string
+	textContextJWTs  []string
 	textContextID    int
 	textContextErr   error
 
 	textRequest    UpstreamTextMessageRequest
 	textRequestJWT string
+	textRequestJWTs []string
 	textResponse   TextCompletionResult
 	textResponses  []TextCompletionResult
+	textErrors     []error
 	textCallCount  int
 	textErr        error
 
 	textStreamRequest    UpstreamTextMessageRequest
 	textStreamRequestJWT string
+	textStreamRequestJWTs []string
 	textStreamEvents     []TextStreamEvent
 	textStreamResponse   TextCompletionResult
+	textStreamErrors     []error
+	textStreamCallCount  int
 	textStreamErr        error
 
 	quotaByJWT    map[string]int
@@ -183,6 +215,7 @@ func (f *fakeBackend) CreateChatContext(model, title, jwtToken string) (int, err
 	f.textContextModel = model
 	f.textContextTitle = title
 	f.textContextJWT = jwtToken
+	f.textContextJWTs = append(f.textContextJWTs, jwtToken)
 	if f.textContextErr != nil {
 		return 0, f.textContextErr
 	}
@@ -195,7 +228,11 @@ func (f *fakeBackend) CreateChatContext(model, title, jwtToken string) (int, err
 func (f *fakeBackend) SendTextMessage(req UpstreamTextMessageRequest, jwtToken string) (TextCompletionResult, error) {
 	f.textRequest = req
 	f.textRequestJWT = jwtToken
+	f.textRequestJWTs = append(f.textRequestJWTs, jwtToken)
 	f.textCallCount++
+	if len(f.textErrors) >= f.textCallCount && f.textErrors[f.textCallCount-1] != nil {
+		return TextCompletionResult{}, f.textErrors[f.textCallCount-1]
+	}
 	if f.textErr != nil {
 		return TextCompletionResult{}, f.textErr
 	}
@@ -222,6 +259,11 @@ func (f *fakeBackend) SendTextMessage(req UpstreamTextMessageRequest, jwtToken s
 func (f *fakeBackend) StreamTextMessage(req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error) {
 	f.textStreamRequest = req
 	f.textStreamRequestJWT = jwtToken
+	f.textStreamRequestJWTs = append(f.textStreamRequestJWTs, jwtToken)
+	f.textStreamCallCount++
+	if len(f.textStreamErrors) >= f.textStreamCallCount && f.textStreamErrors[f.textStreamCallCount-1] != nil {
+		return TextCompletionResult{}, f.textStreamErrors[f.textStreamCallCount-1]
+	}
 	if f.textStreamErr != nil {
 		return TextCompletionResult{}, f.textStreamErr
 	}
@@ -259,6 +301,12 @@ func (f *fakeBackend) GetCount(jwtToken string) (int, error) {
 	}
 	return 65, nil
 }
+
+type fakeTimeoutError struct{}
+
+func (fakeTimeoutError) Error() string   { return "upstream text request timed out" }
+func (fakeTimeoutError) Timeout() bool   { return true }
+func (fakeTimeoutError) Temporary() bool { return true }
 
 type fakePoolManager struct {
 	*fakePool
@@ -711,6 +759,44 @@ func TestChatCompletionsSupportsTextChat(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsRetriesTextTimeoutWithFreshAccount(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	pool.acquireQueue = []*Account{
+		{JWT: "jwt-timeout", Quota: 65},
+		{JWT: "jwt-healthy", Quota: 65},
+	}
+	backend.textErrors = []error{fakeTimeoutError{}}
+	backend.textResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1",
+		Content:   "hello after retry",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1",
+		"messages":[{"role":"user","content":"Say hello."}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.cooldowns) != 1 || pool.cooldowns[0].Account == nil || pool.cooldowns[0].Account.JWT != "jwt-timeout" {
+		t.Fatalf("expected first timed-out account to be cooled down, got %+v", pool.cooldowns)
+	}
+	if len(backend.textRequestJWTs) != 2 || backend.textRequestJWTs[0] != "jwt-timeout" || backend.textRequestJWTs[1] != "jwt-healthy" {
+		t.Fatalf("expected text request retry to switch accounts, got %+v", backend.textRequestJWTs)
+	}
+	if !strings.Contains(recorder.Body.String(), "hello after retry") {
+		t.Fatalf("expected successful retry response, got %s", recorder.Body.String())
+	}
+}
+
 func TestChatCompletionsAutoContinuesTruncatedCodeResponses(t *testing.T) {
 	t.Helper()
 
@@ -896,6 +982,50 @@ func TestChatCompletionsStreamsTextChat(t *testing.T) {
 	}
 	if backend.textCallCount != 0 {
 		t.Fatalf("expected no continuation call for complete stream, got %d", backend.textCallCount)
+	}
+}
+
+func TestChatCompletionsRetriesStreamingTimeoutBeforeFirstChunk(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	pool.acquireQueue = []*Account{
+		{JWT: "jwt-stream-timeout", Quota: 65},
+		{JWT: "jwt-stream-healthy", Quota: 65},
+	}
+	backend.textStreamErrors = []error{fakeTimeoutError{}}
+	backend.textStreamEvents = []TextStreamEvent{
+		{Type: "botType", ChatModel: "gpt-4.1"},
+		{Type: "chunk", Delta: "stream"},
+		{Type: "chunk", Delta: "_ok"},
+	}
+	backend.textStreamResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1",
+		Content:   "stream_ok",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1",
+		"stream":true,
+		"messages":[{"role":"user","content":"Say hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.cooldowns) != 1 || pool.cooldowns[0].Account == nil || pool.cooldowns[0].Account.JWT != "jwt-stream-timeout" {
+		t.Fatalf("expected timed-out streaming account to be cooled down, got %+v", pool.cooldowns)
+	}
+	if len(backend.textStreamRequestJWTs) != 2 || backend.textStreamRequestJWTs[0] != "jwt-stream-timeout" || backend.textStreamRequestJWTs[1] != "jwt-stream-healthy" {
+		t.Fatalf("expected streaming retry to switch accounts, got %+v", backend.textStreamRequestJWTs)
+	}
+	if !strings.Contains(recorder.Body.String(), `"content":"stream"`) || !strings.Contains(recorder.Body.String(), "[DONE]") {
+		t.Fatalf("expected successful streamed retry response, got %s", recorder.Body.String())
 	}
 }
 

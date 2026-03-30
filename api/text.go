@@ -15,6 +15,9 @@ import (
 const (
 	chataibotAPIBaseURL = "https://chataibot.pro/api"
 	upstreamFromWeb     = 1
+	textRequestTimeout  = 18 * time.Second
+	textJobPollInterval = 2 * time.Second
+	textJobPollAttempts = 8
 )
 
 func (c *APIClient) CreateChatContext(model, title, jwtToken string) (int, error) {
@@ -59,7 +62,7 @@ func (c *APIClient) SendTextMessage(req protocol.TextMessageRequest, jwtToken st
 	}
 
 	slowClient := *c.httpClient
-	slowClient.Timeout = 5 * time.Minute
+	slowClient.Timeout = textRequestTimeout
 
 	resp, err := slowClient.Do(httpReq)
 	if err != nil {
@@ -91,7 +94,7 @@ func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken 
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	slowClient := *c.httpClient
-	slowClient.Timeout = 5 * time.Minute
+	slowClient.Timeout = textRequestTimeout
 
 	resp, err := slowClient.Do(httpReq)
 	if err != nil {
@@ -171,8 +174,8 @@ func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken 
 }
 
 func (c *APIClient) pollTextJob(jobID int, jwtToken string) (protocol.TextCompletionResult, error) {
-	for range 100 {
-		time.Sleep(3 * time.Second)
+	for range textJobPollAttempts {
+		time.Sleep(textJobPollInterval)
 
 		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/jobs/%d", chataibotAPIBaseURL, jobID), nil)
 		if err != nil {

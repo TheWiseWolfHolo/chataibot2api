@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
 	"sort"
@@ -48,6 +50,8 @@ type App struct {
 }
 
 const (
+	textRetryAttempts       = 2
+	textRetryCooldown       = 90 * time.Second
 	maxTextContinuationTurns = 2
 	minTruncationContentSize = 1200
 )
@@ -320,26 +324,47 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 		return TextCompletionResult{}, newStatusError(http.StatusBadRequest, err.Error())
 	}
 
-	acc := a.pool.Acquire(requiredCost)
-	defer a.pool.Release(acc)
+	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
+		acc := a.pool.Acquire(requiredCost)
 
-	chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
-	if err != nil {
-		return TextCompletionResult{}, wrapTextBackendError("failed to create chat context", err)
+		chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
+		if err != nil {
+			wrapped := wrapTextBackendError("failed to create chat context", err)
+			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
+				a.releaseTextAccount(acc, textRetryCooldown)
+				continue
+			}
+			a.pool.Release(acc)
+			return TextCompletionResult{}, wrapped
+		}
+
+		messageReq.ChatID = chatID
+		resp, err := a.backend.SendTextMessage(messageReq, acc.JWT)
+		if err != nil {
+			wrapped := wrapTextBackendError("text generation failed", err)
+			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
+				a.releaseTextAccount(acc, textRetryCooldown)
+				continue
+			}
+			a.pool.Release(acc)
+			return TextCompletionResult{}, wrapped
+		}
+
+		resp, err = validateTextCompletionResult(req.Model, resp)
+		if err != nil {
+			a.pool.Release(acc)
+			return TextCompletionResult{}, err
+		}
+
+		resp, err = a.extendTruncatedTextCompletion(messageReq, acc.JWT, resp)
+		a.pool.Release(acc)
+		if err != nil {
+			return TextCompletionResult{}, err
+		}
+		return resp, nil
 	}
 
-	messageReq.ChatID = chatID
-	resp, err := a.backend.SendTextMessage(messageReq, acc.JWT)
-	if err != nil {
-		return TextCompletionResult{}, wrapTextBackendError("text generation failed", err)
-	}
-
-	resp, err = validateTextCompletionResult(req.Model, resp)
-	if err != nil {
-		return TextCompletionResult{}, err
-	}
-
-	return a.extendTruncatedTextCompletion(messageReq, acc.JWT, resp)
+	return TextCompletionResult{}, newTypedStatusError(http.StatusGatewayTimeout, "text generation timed out after retry", "upstream_timeout")
 }
 
 func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEvent) error) (TextCompletionResult, error) {
@@ -352,51 +377,77 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 		return TextCompletionResult{}, newStatusError(http.StatusBadRequest, err.Error())
 	}
 
-	acc := a.pool.Acquire(requiredCost)
-	defer a.pool.Release(acc)
+	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
+		acc := a.pool.Acquire(requiredCost)
 
-	chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
-	if err != nil {
-		return TextCompletionResult{}, wrapTextBackendError("failed to create chat context", err)
-	}
-
-	messageReq.ChatID = chatID
-	streamedAnyChunk := false
-	resp, err := a.backend.StreamTextMessage(messageReq, acc.JWT, func(event TextStreamEvent) error {
-		if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
-			if mismatchErr := ensureModelMatch(req.Model, event.ChatModel); mismatchErr != nil {
-				return mismatchErr
+		chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
+		if err != nil {
+			wrapped := wrapTextBackendError("failed to create chat context", err)
+			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
+				a.releaseTextAccount(acc, textRetryCooldown)
+				continue
 			}
+			a.pool.Release(acc)
+			return TextCompletionResult{}, wrapped
 		}
-		if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "" {
-			streamedAnyChunk = true
-		}
-		if emit == nil {
-			return nil
-		}
-		return emit(event)
-	})
-	if err != nil {
-		return TextCompletionResult{}, wrapTextBackendError("text streaming failed", err)
-	}
 
-	resp, err = validateTextCompletionResult(req.Model, resp)
-	if err != nil {
-		return TextCompletionResult{}, err
-	}
+		messageReq.ChatID = chatID
+		streamedAnyChunk := false
+		streamedAnyEvent := false
+		resp, err := a.backend.StreamTextMessage(messageReq, acc.JWT, func(event TextStreamEvent) error {
+			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
+				if mismatchErr := ensureModelMatch(req.Model, event.ChatModel); mismatchErr != nil {
+					return mismatchErr
+				}
+			}
+			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") || (strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "") {
+				streamedAnyEvent = true
+			}
+			if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "" {
+				streamedAnyChunk = true
+			}
+			if emit == nil {
+				return nil
+			}
+			return emit(event)
+		})
+		if err != nil {
+			wrapped := wrapTextBackendError("text streaming failed", err)
+			if !streamedAnyEvent && shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
+				a.releaseTextAccount(acc, textRetryCooldown)
+				continue
+			}
+			a.pool.Release(acc)
+			return TextCompletionResult{}, wrapped
+		}
 
-	if emit != nil && !streamedAnyChunk && shouldAttemptTextContinuation(messageReq.Text, resp.Content) {
-		if err := emit(TextStreamEvent{Type: "chunk", Delta: resp.Content}); err != nil {
+		resp, err = validateTextCompletionResult(req.Model, resp)
+		if err != nil {
+			a.pool.Release(acc)
 			return TextCompletionResult{}, err
 		}
+
+		if emit != nil && !streamedAnyChunk && shouldAttemptTextContinuation(messageReq.Text, resp.Content) {
+			if err := emit(TextStreamEvent{Type: "chunk", Delta: resp.Content}); err != nil {
+				a.pool.Release(acc)
+				return TextCompletionResult{}, err
+			}
+		}
+
+		result, contErr := a.continueTruncatedTextCompletion(messageReq, acc.JWT, resp, func(delta string) error {
+			if emit == nil || delta == "" {
+				return nil
+			}
+			return emit(TextStreamEvent{Type: "chunk", Delta: delta})
+		})
+		a.pool.Release(acc)
+		if contErr != nil {
+			return TextCompletionResult{}, contErr
+		}
+		return result, nil
 	}
 
-	return a.continueTruncatedTextCompletion(messageReq, acc.JWT, resp, func(delta string) error {
-		if emit == nil || delta == "" {
-			return nil
-		}
-		return emit(TextStreamEvent{Type: "chunk", Delta: delta})
-	})
+	return TextCompletionResult{}, newTypedStatusError(http.StatusGatewayTimeout, "text streaming timed out after retry", "upstream_timeout")
 }
 
 func validateTextCompletionResult(requestedModel string, resp TextCompletionResult) (TextCompletionResult, error) {
@@ -666,6 +717,9 @@ func wrapTextBackendError(prefix string, err error) error {
 	if errors.As(err, &upstreamErr) && upstreamErr != nil {
 		return newTypedStatusError(upstreamErr.StatusCode, upstreamErr.Message, upstreamErr.Type)
 	}
+	if shouldRetryTextBackendError(err) {
+		return newTypedStatusError(http.StatusGatewayTimeout, fmt.Sprintf("%s: %v", prefix, err), "upstream_timeout")
+	}
 	if statusCodeForError(err) != http.StatusInternalServerError {
 		return err
 	}
@@ -738,6 +792,47 @@ func errorTypeForError(err error, fallback string) string {
 		return strings.TrimSpace(withStatus.ErrorType)
 	}
 	return fallback
+}
+
+func shouldRetryTextBackendError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var upstreamErr *protocol.UpstreamError
+	if errors.As(err, &upstreamErr) && upstreamErr != nil {
+		return upstreamErr.StatusCode == http.StatusTooManyRequests || upstreamErr.StatusCode >= http.StatusInternalServerError
+	}
+
+	var timeoutErr net.Error
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	errLower := strings.ToLower(err.Error())
+	return strings.Contains(errLower, "timed out") ||
+		strings.Contains(errLower, "timeout") ||
+		strings.Contains(errLower, "did not complete in time") ||
+		strings.Contains(errLower, "context deadline exceeded") ||
+		strings.Contains(errLower, "client.timeout exceeded")
+}
+
+func (a *App) releaseTextAccount(acc *Account, cooldown time.Duration) {
+	if acc == nil || a.pool == nil {
+		return
+	}
+	if cooldown > 0 {
+		if coolingPool, ok := a.pool.(interface {
+			Cooldown(*Account, time.Duration)
+		}); ok {
+			coolingPool.Cooldown(acc, cooldown)
+			return
+		}
+	}
+	a.pool.Release(acc)
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {

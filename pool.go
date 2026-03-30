@@ -342,6 +342,20 @@ func (p *SimplePool) Release(acc *Account) {
 	p.cond.Broadcast()
 }
 
+func (p *SimplePool) Cooldown(acc *Account, delay time.Duration) {
+	if acc == nil {
+		return
+	}
+	if delay <= 0 {
+		p.Release(acc)
+		return
+	}
+
+	time.AfterFunc(delay, func() {
+		p.Release(acc)
+	})
+}
+
 func (p *SimplePool) Status() PoolStatus {
 	p.mu.Lock()
 	defer p.mu.Unlock()
