@@ -34,7 +34,7 @@ type chatImageURL struct {
 }
 
 func isSupportedImageModel(model string) bool {
-	cfg, ok := modelRouter[strings.TrimSpace(model)]
+	cfg, ok := modelRouter[resolveRawModelID(model)]
 	return ok && !cfg.Hidden
 }
 
@@ -50,7 +50,7 @@ func (a *App) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	model := strings.TrimSpace(req.Model)
+	model := resolveRawModelID(req.Model)
 	req.Model = model
 
 	switch {
@@ -100,7 +100,7 @@ func (a *App) handleImageChatCompletions(w http.ResponseWriter, req chatCompleti
 
 	markdown := buildMarkdownImageContent(resp.Data)
 	if req.Stream {
-		writeChatCompletionStream(w, req.Model, markdown, resp.Created)
+		writeChatCompletionStream(w, publicModelID(req.Model), markdown, resp.Created)
 		return
 	}
 
@@ -108,7 +108,7 @@ func (a *App) handleImageChatCompletions(w http.ResponseWriter, req chatCompleti
 		"id":      fmt.Sprintf("chatcmpl-%d", resp.Created),
 		"object":  "chat.completion",
 		"created": resp.Created,
-		"model":   req.Model,
+		"model":   publicModelID(req.Model),
 		"choices": []map[string]any{
 			{
 				"index": 0,

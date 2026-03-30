@@ -12,16 +12,17 @@ import (
 const syntheticStreamChunkGap = 24 * time.Millisecond
 
 func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletionRequest) {
+	publicID := publicModelID(req.Model)
 	if req.Stream {
 		writer := &openAITextStreamWriter{
 			w:       w,
-			model:   req.Model,
+			model:   publicID,
 			created: a.now().Unix(),
 		}
 		resp, err := a.StreamTextChat(req, func(event TextStreamEvent) error {
 			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
 				if strings.TrimSpace(event.ChatModel) != "" {
-					writer.model = event.ChatModel
+					writer.model = publicModelID(event.ChatModel)
 				}
 				return writer.WriteRole()
 			}
@@ -60,7 +61,7 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 		"id":      fmt.Sprintf("chatcmpl-%d", a.now().Unix()),
 		"object":  "chat.completion",
 		"created": a.now().Unix(),
-		"model":   req.Model,
+		"model":   publicID,
 		"choices": []map[string]any{
 			{
 				"index": 0,

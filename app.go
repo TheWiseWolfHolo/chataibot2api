@@ -126,7 +126,7 @@ func (a *App) AdminCatalog() AdminCatalog {
 	for modelID, cfg := range textModelRouter {
 		tiers := textAccessTiers(modelID)
 		catalog.TextModels = append(catalog.TextModels, AdminModelInfo{
-			ID:          modelID,
+			ID:          publicModelID(modelID),
 			Cost:        cfg.Cost,
 			Category:    "text",
 			MinimumTier: minimumTier(tiers),
@@ -142,7 +142,7 @@ func (a *App) AdminCatalog() AdminCatalog {
 	for modelID, cfg := range modelRouter {
 		tiers := imageAccessTiers(modelID)
 		catalog.ImageModels = append(catalog.ImageModels, AdminModelInfo{
-			ID:            modelID,
+			ID:            publicModelID(modelID),
 			Cost:          cfg.Cost,
 			Category:      "image",
 			MinimumTier:   minimumTier(tiers),
@@ -291,9 +291,9 @@ func imageRouteAdvice(modelID string) string {
 	case "FLUX-pro", "FLUX-ultra":
 		return "适合 Flux 系列高质量生图"
 	case "GPT_IMAGE_1_5":
-		return "适合默认生图；若只是改图，优先考虑 GOOGLE-nano-banana"
+		return "适合默认生图；若只是改图，优先考虑 gemini-2.5-flash-image"
 	case "GPT_IMAGE":
-		return "适合 OpenAI 生图；若只是改图，成本高于 GOOGLE-nano-banana"
+		return "适合 OpenAI 生图；若只是改图，成本高于 gemini-2.5-flash-image"
 	case "GPT_IMAGE_HIGH", "GPT_IMAGE_1_5_HIGH":
 		return "适合高细节生图，不建议作为默认改图入口"
 	case "GOOGLE-nano-banana":
@@ -386,13 +386,13 @@ func (a *App) Models() []string {
 		if cfg.Hidden {
 			continue
 		}
-		models = append(models, modelID)
+		models = append(models, publicModelID(modelID))
 	}
 	for modelID, cfg := range textModelRouter {
 		if cfg.Hidden {
 			continue
 		}
-		models = append(models, modelID)
+		models = append(models, publicModelID(modelID))
 	}
 	sort.Strings(models)
 	return models

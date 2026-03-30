@@ -531,35 +531,35 @@ func TestModelsEndpointListsSupportedModels(t *testing.T) {
 	if _, ok := modelIDs["gpt-4.1"]; !ok {
 		t.Fatalf("expected gpt-4.1 in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["GOOGLE-nano-banana"]; !ok {
-		t.Fatalf("expected GOOGLE-nano-banana in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["gemini-2.5-flash-image"]; !ok {
+		t.Fatalf("expected gemini-2.5-flash-image in model list, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["gpt-4o-search-preview"]; !ok {
 		t.Fatalf("expected gpt-4o-search-preview in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["GOOGLE-nano-banana-pro"]; ok {
-		t.Fatalf("expected gated model GOOGLE-nano-banana-pro to be omitted, got %+v", resp.Data)
+	if _, ok := modelIDs["GOOGLE-nano-banana"]; ok {
+		t.Fatalf("expected raw image model id GOOGLE-nano-banana to be hidden from public list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["GOOGLE-nano-banana-2"]; !ok {
-		t.Fatalf("expected GOOGLE-nano-banana-2 in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["gemini-3.1-flash-image-preview"]; !ok {
+		t.Fatalf("expected gemini-3.1-flash-image-preview in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["BYTEDANCE-seedream-5-lite"]; !ok {
-		t.Fatalf("expected BYTEDANCE-seedream-5-lite in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["seedream-5.0-lite"]; !ok {
+		t.Fatalf("expected seedream-5.0-lite in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["GPT_IMAGE_1_5"]; !ok {
-		t.Fatalf("expected GPT_IMAGE_1_5 in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["gpt-image-1.5"]; !ok {
+		t.Fatalf("expected gpt-image-1.5 in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["FLUX-schnell"]; !ok {
-		t.Fatalf("expected FLUX-schnell in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["flux-schnell"]; !ok {
+		t.Fatalf("expected flux-schnell in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["GPT_IMAGE"]; !ok {
-		t.Fatalf("expected GPT_IMAGE in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["gpt-image-1"]; !ok {
+		t.Fatalf("expected gpt-image-1 in model list, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["GPT_IMAGE_1_5_HIGH"]; ok {
 		t.Fatalf("expected paid model GPT_IMAGE_1_5_HIGH to be omitted, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["gpt-image-1.5"]; ok {
-		t.Fatalf("expected legacy alias gpt-image-1.5 to be omitted, got %+v", resp.Data)
+	if _, ok := modelIDs["GPT_IMAGE_1_5"]; ok {
+		t.Fatalf("expected raw model id GPT_IMAGE_1_5 to be hidden from public list, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["bytedance-seedream"]; ok {
 		t.Fatalf("expected merged alias bytedance-seedream to be omitted, got %+v", resp.Data)
@@ -580,7 +580,7 @@ func TestChatCompletionsWrapsGenerateAsMarkdown(t *testing.T) {
 
 	pool, backend, handler := newTestHandler()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"GPT_IMAGE_1_5",
+		"model":"gpt-image-1.5",
 		"messages":[{"role":"user","content":"draw a cat hacker"}]
 	}`))
 	req.Header.Set("Authorization", "Bearer api-token")
@@ -623,7 +623,7 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 	pool, backend, handler := newTestHandler()
 
 	editReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"GOOGLE-nano-banana",
+		"model":"gemini-2.5-flash-image",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -647,7 +647,7 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 	}
 
 	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"GOOGLE-nano-banana",
+		"model":"gemini-2.5-flash-image",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -678,7 +678,7 @@ func TestChatCompletionsSupportsGptImage15EditAndMerge(t *testing.T) {
 	pool, backend, handler := newTestHandler()
 
 	editReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"GPT_IMAGE_1_5",
+		"model":"gpt-image-1.5",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -702,7 +702,7 @@ func TestChatCompletionsSupportsGptImage15EditAndMerge(t *testing.T) {
 	}
 
 	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"GPT_IMAGE_1_5",
+		"model":"gpt-image-1.5",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -1953,11 +1953,11 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"minimum_tier":"free"`) {
 		t.Fatalf("expected minimum tier metadata in catalog, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"GPT_IMAGE_1_5"`) {
-		t.Fatalf("expected image model in catalog, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"gpt-image-1.5"`) {
+		t.Fatalf("expected public image model id in catalog, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"GOOGLE-nano-banana-2"`) {
-		t.Fatalf("expected GOOGLE-nano-banana-2 in image catalog, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"gemini-3.1-flash-image-preview"`) {
+		t.Fatalf("expected public image model id in catalog, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"GPT_IMAGE_1_5_HIGH"`) {
 		t.Fatalf("expected GPT_IMAGE_1_5_HIGH in admin catalog, got %s", rec.Body.String())
@@ -1983,7 +1983,7 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"runtime_note":"仅chat生图"`) {
 		t.Fatalf("expected runtime note for generate-only models, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"route_advice":"适合默认生图；若只是改图，优先考虑 GOOGLE-nano-banana"`) {
+	if !strings.Contains(rec.Body.String(), `"route_advice":"适合默认生图；若只是改图，优先考虑 gemini-2.5-flash-image"`) {
 		t.Fatalf("expected route advice metadata, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"low_quota_threshold":10`) {

@@ -22,28 +22,27 @@ OpenAI-compatible image and text proxy with an account-pool admin console, Docke
   - free-tier request budget shown to the user: `65`
   - `maxMessageLength`: `2500`
   - default text model: `gpt-4.1-nano`
-  - default image generation model: `GPT_IMAGE_1_5`
-  - default image edit model: `GOOGLE-nano-banana`
+  - default image generation model: `gpt-image-1.5`
+  - default image edit model: `gemini-2.5-flash-image`
   - public `/v1/models` returns upstream ids and, by default, only models currently marked free-tier upstream
   - admin catalog keeps paid models too, but `/v1/models` does not
 - Current image-route pricing / access hints synced from upstream catalog:
-  - `FLUX-schnell`: 生图 `2`
-  - `IDEOGRAM_TURBO`: 生图 `4`
-  - `GPT_IMAGE_1_5`: 生图 `12`，改图 `17`，拼图 `2图22 / 3图27 / 4图32`
-  - `GPT_IMAGE`: 生图 `15`，改图 `20`，拼图 `2图25 / 3图30 / 4图35`
-  - `GOOGLE-nano-banana`: 生图 `15`，改图 `15`，拼图 `2图20 / 3图25 / 4图30`，适合作为默认改图入口
-  - `GOOGLE-nano-banana-2`: 生图 `30`，改图 `30`，拼图 `2图40 / 3图50 / 4图60`，free 可见但成本高于 `GOOGLE-nano-banana`
-  - `QWEN-lora`: 生图/改图/拼图统一 `2`，适合作为最低成本改图测试
-  - `IDEOGRAM`: 仅生图
-  - `FLUX-pro`: 仅生图，`10`
-  - `FLUX-ultra`: 仅生图，`12`
-  - `GROK`: 仅生图，`10`
-  - `BYTEDANCE-seedream-4`: 仅生图，`12`
-  - `BYTEDANCE-seedream-5-lite`: 仅生图
+  - `flux-schnell`: 生图 `2`
+  - `ideogram-3-turbo`: 生图 `4`
+  - `gpt-image-1.5`: 生图 `12`，改图 `17`，拼图 `2图22 / 3图27 / 4图32`
+  - `gpt-image-1`: 生图 `15`，改图 `20`，拼图 `2图25 / 3图30 / 4图35`
+  - `gemini-2.5-flash-image`: 生图 `15`，改图 `15`，拼图 `2图20 / 3图25 / 4图30`，适合作为默认改图入口
+  - `gemini-3.1-flash-image-preview`: 生图 `30`，改图 `30`，拼图 `2图40 / 3图50 / 4图60`，free 可见但成本高于 `gemini-2.5-flash-image`
+  - `qwen-image(lora)`: 生图/改图/拼图统一 `2`，适合作为最低成本改图测试
+  - `ideogram-3`: 仅生图
+  - `flux-1.1-pro`: 仅生图，`10`
+  - `flux-ultra`: 仅生图，`12`
+  - `seedream-4.0`: 仅生图，`12`
+  - `seedream-5.0-lite`: 仅生图
 - Proxy default routing:
-  - model omitted + pure generation → `GPT_IMAGE_1_5`
-  - model omitted + single-image edit → `GOOGLE-nano-banana`
-  - model omitted + multi-image merge → `GPT_IMAGE_1_5`
+  - model omitted + pure generation → `gpt-image-1.5`
+  - model omitted + single-image edit → `gemini-2.5-flash-image`
+  - model omitted + multi-image merge → `gpt-image-1.5`
 - Text path now uses model-aware account selection and retries on timeout / EOF / transport resets instead of assuming every account supports every text model equally.
 - Admin catalog UI shows the minimum required tier instead of rendering every inherited tier badge.
 

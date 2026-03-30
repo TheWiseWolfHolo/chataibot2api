@@ -1,7 +1,5 @@
 package main
 
-import "strings"
-
 type TextModelConfig struct {
 	Cost     int
 	Internet bool
@@ -53,7 +51,7 @@ var textModelRouter = map[string]TextModelConfig{
 }
 
 func lookupTextModel(model string) (TextModelConfig, bool) {
-	cfg, ok := textModelRouter[strings.TrimSpace(model)]
+	cfg, ok := textModelRouter[resolveRawModelID(model)]
 	return cfg, ok
 }
 
