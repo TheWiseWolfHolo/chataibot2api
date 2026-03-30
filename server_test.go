@@ -531,20 +531,35 @@ func TestModelsEndpointListsSupportedModels(t *testing.T) {
 	if _, ok := modelIDs["gpt-4.1"]; !ok {
 		t.Fatalf("expected gpt-4.1 in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["google-nano-banana"]; !ok {
-		t.Fatalf("expected google-nano-banana in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["GOOGLE-nano-banana"]; !ok {
+		t.Fatalf("expected GOOGLE-nano-banana in model list, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["gpt-4o-search-preview"]; !ok {
 		t.Fatalf("expected gpt-4o-search-preview in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["google-nano-banana-pro"]; ok {
-		t.Fatalf("expected gated model google-nano-banana-pro to be omitted, got %+v", resp.Data)
+	if _, ok := modelIDs["GOOGLE-nano-banana-pro"]; ok {
+		t.Fatalf("expected gated model GOOGLE-nano-banana-pro to be omitted, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["google-nano-banana-2"]; !ok {
-		t.Fatalf("expected google-nano-banana-2 in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["GOOGLE-nano-banana-2"]; !ok {
+		t.Fatalf("expected GOOGLE-nano-banana-2 in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["midjourney-7"]; ok {
-		t.Fatalf("expected gated model midjourney-7 to be omitted, got %+v", resp.Data)
+	if _, ok := modelIDs["BYTEDANCE-seedream-5-lite"]; !ok {
+		t.Fatalf("expected BYTEDANCE-seedream-5-lite in model list, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["GPT_IMAGE_1_5"]; !ok {
+		t.Fatalf("expected GPT_IMAGE_1_5 in model list, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["GPT_IMAGE_1_5_HIGH"]; ok {
+		t.Fatalf("expected paid model GPT_IMAGE_1_5_HIGH to be omitted, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["gpt-image-1.5"]; ok {
+		t.Fatalf("expected legacy alias gpt-image-1.5 to be omitted, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["bytedance-seedream"]; ok {
+		t.Fatalf("expected merged alias bytedance-seedream to be omitted, got %+v", resp.Data)
+	}
+	if _, ok := modelIDs["MIDJOURNEY-7"]; ok {
+		t.Fatalf("expected gated model MIDJOURNEY-7 to be omitted, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["gpt-5.4-pro"]; ok {
 		t.Fatalf("expected hidden model gpt-5.4-pro to be omitted, got %+v", resp.Data)
@@ -559,7 +574,7 @@ func TestChatCompletionsWrapsGenerateAsMarkdown(t *testing.T) {
 
 	pool, backend, handler := newTestHandler()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"gpt-image-1.5-high",
+		"model":"GPT_IMAGE_1_5",
 		"messages":[{"role":"user","content":"draw a cat hacker"}]
 	}`))
 	req.Header.Set("Authorization", "Bearer api-token")
@@ -571,8 +586,8 @@ func TestChatCompletionsWrapsGenerateAsMarkdown(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
-	if pool.acquiredCost != 40 {
-		t.Fatalf("expected cost 40, got %d", pool.acquiredCost)
+	if pool.acquiredCost != 12 {
+		t.Fatalf("expected cost 12, got %d", pool.acquiredCost)
 	}
 	if !backend.updateCalled || backend.lastRatio != "auto" {
 		t.Fatalf("expected update user settings with auto ratio, got called=%v ratio=%q", backend.updateCalled, backend.lastRatio)
@@ -602,7 +617,7 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 	pool, backend, handler := newTestHandler()
 
 	editReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"google-nano-banana",
+		"model":"GOOGLE-nano-banana",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -619,14 +634,14 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 		t.Fatalf("expected edit status %d, got %d with body %s", http.StatusOK, editRecorder.Code, editRecorder.Body.String())
 	}
 	if pool.acquiredCost != 15 {
-		t.Fatalf("expected google-nano-banana edit cost 15, got %d", pool.acquiredCost)
+		t.Fatalf("expected GOOGLE-nano-banana edit cost 15, got %d", pool.acquiredCost)
 	}
 	if backend.lastEditMode != "edit_google_nano_banana" || backend.lastImage != "data:image/png;base64,abc" {
 		t.Fatalf("unexpected edit call mode=%q image=%q", backend.lastEditMode, backend.lastImage)
 	}
 
 	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"google-nano-banana",
+		"model":"GOOGLE-nano-banana",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -644,7 +659,7 @@ func TestChatCompletionsSupportsEditAndMerge(t *testing.T) {
 		t.Fatalf("expected merge status %d, got %d with body %s", http.StatusOK, mergeRecorder.Code, mergeRecorder.Body.String())
 	}
 	if pool.acquiredCost != 20 {
-		t.Fatalf("expected google-nano-banana merge cost 20 for two images, got %d", pool.acquiredCost)
+		t.Fatalf("expected GOOGLE-nano-banana merge cost 20 for two images, got %d", pool.acquiredCost)
 	}
 	if backend.lastMerge != "merge_google_nano_banana" || len(backend.lastImages) != 2 {
 		t.Fatalf("unexpected merge call mode=%q images=%v", backend.lastMerge, backend.lastImages)
@@ -657,7 +672,7 @@ func TestChatCompletionsSupportsGptImage15EditAndMerge(t *testing.T) {
 	pool, backend, handler := newTestHandler()
 
 	editReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"gpt-image-1.5",
+		"model":"GPT_IMAGE_1_5",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -674,14 +689,14 @@ func TestChatCompletionsSupportsGptImage15EditAndMerge(t *testing.T) {
 		t.Fatalf("expected edit status %d, got %d with body %s", http.StatusOK, editRecorder.Code, editRecorder.Body.String())
 	}
 	if pool.acquiredCost != 17 {
-		t.Fatalf("expected gpt-image-1.5 edit cost 17, got %d", pool.acquiredCost)
+		t.Fatalf("expected GPT_IMAGE_1_5 edit cost 17, got %d", pool.acquiredCost)
 	}
 	if backend.lastEditMode != "edit_gpt_1_5" || backend.lastImage != "data:image/png;base64,abc" {
-		t.Fatalf("unexpected gpt-image-1.5 edit call mode=%q image=%q", backend.lastEditMode, backend.lastImage)
+		t.Fatalf("unexpected GPT_IMAGE_1_5 edit call mode=%q image=%q", backend.lastEditMode, backend.lastImage)
 	}
 
 	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"gpt-image-1.5-high",
+		"model":"GPT_IMAGE_1_5",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -698,11 +713,11 @@ func TestChatCompletionsSupportsGptImage15EditAndMerge(t *testing.T) {
 	if mergeRecorder.Code != http.StatusOK {
 		t.Fatalf("expected merge status %d, got %d with body %s", http.StatusOK, mergeRecorder.Code, mergeRecorder.Body.String())
 	}
-	if pool.acquiredCost != 60 {
-		t.Fatalf("expected gpt-image-1.5-high two-image merge cost 60, got %d", pool.acquiredCost)
+	if pool.acquiredCost != 22 {
+		t.Fatalf("expected GPT_IMAGE_1_5 two-image merge cost 22, got %d", pool.acquiredCost)
 	}
-	if backend.lastMerge != "merge_gpt_1_5_high" || len(backend.lastImages) != 2 {
-		t.Fatalf("unexpected gpt-image-1.5-high merge call mode=%q images=%v", backend.lastMerge, backend.lastImages)
+	if backend.lastMerge != "merge_gpt_1_5" || len(backend.lastImages) != 2 {
+		t.Fatalf("unexpected GPT_IMAGE_1_5 merge call mode=%q images=%v", backend.lastMerge, backend.lastImages)
 	}
 }
 
@@ -724,10 +739,10 @@ func TestImagesGenerationsDefaultsToGoogleNanoBananaForEditRequests(t *testing.T
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
 	if pool.acquiredCost != 15 {
-		t.Fatalf("expected default edit route to use google-nano-banana cost 15, got %d", pool.acquiredCost)
+		t.Fatalf("expected default edit route to use GOOGLE-nano-banana cost 15, got %d", pool.acquiredCost)
 	}
 	if backend.lastEditMode != "edit_google_nano_banana" {
-		t.Fatalf("expected default edit route to use google-nano-banana, got mode=%q", backend.lastEditMode)
+		t.Fatalf("expected default edit route to use GOOGLE-nano-banana, got mode=%q", backend.lastEditMode)
 	}
 }
 
@@ -737,7 +752,7 @@ func TestChatCompletionsRejectsHiddenImageModelsAsUnsupported(t *testing.T) {
 	_, backend, handler := newTestHandler()
 
 	editReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"google-nano-banana-pro",
+		"model":"GOOGLE-nano-banana-pro",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -766,7 +781,7 @@ func TestImagesGenerationsRejectsHiddenImageModelsAsUnsupported(t *testing.T) {
 
 	_, backend, handler := newTestHandler()
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
-		"model":"midjourney-7",
+		"model":"MIDJOURNEY-7",
 		"prompt":"draw a hidden model probe"
 	}`))
 	req.Header.Set("Authorization", "Bearer api-token")
@@ -1092,7 +1107,7 @@ func TestChatCompletionsStreamsMarkdown(t *testing.T) {
 
 	_, _, handler := newTestHandler()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"gpt-image-1.5-high",
+		"model":"GPT_IMAGE_1_5",
 		"stream":true,
 		"messages":[{"role":"user","content":"draw a cat hacker"}]
 	}`))
@@ -1422,7 +1437,7 @@ func TestChatCompletionsSurfacesImageSubscriptionErrorsAsForbidden(t *testing.T)
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"gpt-image-1.5",
+		"model":"GPT_IMAGE_1_5",
 		"messages":[{
 			"role":"user",
 			"content":[
@@ -1932,20 +1947,17 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"minimum_tier":"free"`) {
 		t.Fatalf("expected minimum tier metadata in catalog, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"gpt-image-1.5"`) {
+	if !strings.Contains(rec.Body.String(), `"GPT_IMAGE_1_5"`) {
 		t.Fatalf("expected image model in catalog, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"google-nano-banana-2"`) {
-		t.Fatalf("expected google-nano-banana-2 in image catalog, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"GOOGLE-nano-banana-2"`) {
+		t.Fatalf("expected GOOGLE-nano-banana-2 in image catalog, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"edit_access":"cost-higher-than-generate"`) {
-		t.Fatalf("expected higher-cost edit metadata for gpt-image-1.5, got %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"edit_access":"subscription-gated"`) {
-		t.Fatalf("expected subscription-gated edit access metadata, got %s", rec.Body.String())
+		t.Fatalf("expected higher-cost edit metadata for GPT_IMAGE_1_5, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"edit_cost":17`) {
-		t.Fatalf("expected gpt-image-1.5 edit cost metadata, got %s", rec.Body.String())
+		t.Fatalf("expected GPT_IMAGE_1_5 edit cost metadata, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"merge_cost_note":"2图 22 / 3图 27 / 4图 32"`) {
 		t.Fatalf("expected merge cost note metadata, got %s", rec.Body.String())
@@ -1956,10 +1968,7 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"runtime_note":"仅chat生图"`) {
 		t.Fatalf("expected runtime note for generate-only models, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"runtime_note":"高细节生图；改图需高级权限"`) {
-		t.Fatalf("expected runtime note for premium-gated high model, got %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"route_advice":"适合默认生图；若只是改图，优先考虑 google-nano-banana"`) {
+	if !strings.Contains(rec.Body.String(), `"route_advice":"适合默认生图；若只是改图，优先考虑 GOOGLE-nano-banana"`) {
 		t.Fatalf("expected route advice metadata, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"low_quota_threshold":10`) {

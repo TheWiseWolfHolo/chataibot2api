@@ -206,9 +206,9 @@ func textRuntimeNote(modelID string) string {
 
 func imageEditAccess(modelID string) string {
 	switch strings.TrimSpace(modelID) {
-	case "gpt-image-1.5-high":
+	case "GPT_IMAGE_1_5_HIGH":
 		return "subscription-gated"
-	case "gpt-image-1.5":
+	case "GPT_IMAGE_1_5":
 		return "cost-higher-than-generate"
 	default:
 		return ""
@@ -217,9 +217,9 @@ func imageEditAccess(modelID string) string {
 
 func imageAccessTiers(modelID string) []string {
 	switch strings.TrimSpace(modelID) {
-	case "gpt-image-1.5", "ideogram", "google-nano-banana", "google-nano-banana-2", "qwen-lora", "bytedance-seedream":
+	case "GPT_IMAGE_1_5", "IDEOGRAM", "GOOGLE-nano-banana", "GOOGLE-nano-banana-2", "QWEN-lora", "BYTEDANCE-seedream-5-lite":
 		return []string{"free", "standard", "premium", "batya", "business"}
-	case "gpt-image-1.5-high":
+	case "GPT_IMAGE_1_5_HIGH":
 		return []string{"premium", "batya", "business"}
 	default:
 		return nil
@@ -257,17 +257,17 @@ func imageMergeCostNote(modelID string, cfg ModelConfig) string {
 
 func imageRuntimeNote(modelID string) string {
 	switch strings.TrimSpace(modelID) {
-	case "google-nano-banana":
+	case "GOOGLE-nano-banana":
 		return "默认改图"
-	case "google-nano-banana-2":
+	case "GOOGLE-nano-banana-2":
 		return "free 可用；较 nano-banana 更贵"
-	case "qwen-lora":
+	case "QWEN-lora":
 		return "最低成本改图"
-	case "gpt-image-1.5":
+	case "GPT_IMAGE_1_5":
 		return "默认生图；改图更贵"
-	case "gpt-image-1.5-high":
+	case "GPT_IMAGE_1_5_HIGH":
 		return "高细节生图；改图需高级权限"
-	case "ideogram", "bytedance-seedream":
+	case "IDEOGRAM", "BYTEDANCE-seedream-5-lite":
 		return "仅chat生图"
 	default:
 		return ""
@@ -276,19 +276,19 @@ func imageRuntimeNote(modelID string) string {
 
 func imageRouteAdvice(modelID string) string {
 	switch strings.TrimSpace(modelID) {
-	case "gpt-image-1.5":
-		return "适合默认生图；若只是改图，优先考虑 google-nano-banana"
-	case "gpt-image-1.5-high":
+	case "GPT_IMAGE_1_5":
+		return "适合默认生图；若只是改图，优先考虑 GOOGLE-nano-banana"
+	case "GPT_IMAGE_1_5_HIGH":
 		return "适合高细节生图，不建议作为默认改图入口"
-	case "google-nano-banana":
+	case "GOOGLE-nano-banana":
 		return "适合默认改图与低门槛多图操作"
-	case "google-nano-banana-2":
+	case "GOOGLE-nano-banana-2":
 		return "适合质量优先的免费改图/拼图，但成本高于 nano-banana"
-	case "qwen-lora":
+	case "QWEN-lora":
 		return "适合最低成本改图/拼图测试"
-	case "ideogram":
+	case "IDEOGRAM":
 		return "适合文本排版、Logo、生图"
-	case "bytedance-seedream":
+	case "BYTEDANCE-seedream-5-lite":
 		return "适合复杂提示生图，不支持改图"
 	default:
 		return ""
@@ -442,11 +442,11 @@ func (a *App) Generate(req OpenAIImageReq) (OpenAIImageResp, error) {
 func defaultImageModelForRequest(isEditMode bool, isMergeMode bool) string {
 	switch {
 	case isMergeMode:
-		return "gpt-image-1.5"
+		return "GPT_IMAGE_1_5"
 	case isEditMode:
-		return "google-nano-banana"
+		return "GOOGLE-nano-banana"
 	default:
-		return "gpt-image-1.5"
+		return "GPT_IMAGE_1_5"
 	}
 }
 
