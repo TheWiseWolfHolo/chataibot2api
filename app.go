@@ -127,12 +127,14 @@ func (a *App) AdminCatalog() AdminCatalog {
 		if cfg.Hidden {
 			continue
 		}
+		tiers := textAccessTiers(modelID)
 		catalog.TextModels = append(catalog.TextModels, AdminModelInfo{
 			ID:          modelID,
 			Cost:        cfg.Cost,
 			Category:    "text",
+			MinimumTier: minimumTier(tiers),
 			Internet:    cfg.Internet,
-			AccessTiers: textAccessTiers(modelID),
+			AccessTiers: tiers,
 			RuntimeNote: textRuntimeNote(modelID),
 		})
 	}
@@ -144,15 +146,17 @@ func (a *App) AdminCatalog() AdminCatalog {
 		if cfg.Hidden {
 			continue
 		}
+		tiers := imageAccessTiers(modelID)
 		catalog.ImageModels = append(catalog.ImageModels, AdminModelInfo{
 			ID:            modelID,
 			Cost:          cfg.Cost,
 			Category:      "image",
+			MinimumTier:   minimumTier(tiers),
 			SupportsEdit:  strings.TrimSpace(cfg.EditMode) != "",
 			SupportsMerge: strings.TrimSpace(cfg.MergeMode) != "",
 			EditAccess:    imageEditAccess(modelID),
 			RuntimeNote:   imageRuntimeNote(modelID),
-			AccessTiers:   imageAccessTiers(modelID),
+			AccessTiers:   tiers,
 			EditCost:      imageEditCost(modelID, cfg),
 			MergeCostNote: imageMergeCostNote(modelID, cfg),
 			RouteAdvice:   imageRouteAdvice(modelID),
@@ -165,13 +169,20 @@ func (a *App) AdminCatalog() AdminCatalog {
 	return catalog
 }
 
+func minimumTier(tiers []string) string {
+	if len(tiers) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(tiers[0])
+}
+
 func textAccessTiers(modelID string) []string {
 	switch strings.TrimSpace(modelID) {
 	case "gpt-4.1-nano", "gpt-5.4-nano", "gpt-5.4-mini", "claude-3-haiku", "gemini-flash",
 		"gpt-4.1", "o4-mini", "claude-4.6-sonnet", "deepseek", "deepseek-v3.2",
 		"qwen3.5", "qwen3-thinking-2507", "gemini-3-flash", "grok", "gemini-pro",
 		"gpt-5.4", "gpt-5.2", "gpt-5.1", "claude-4.5-haiku", "claude-3-sonnet",
-		"perplexity", "gemini-2-flash-search", "gemini-3-flash-search":
+		"perplexity", "gemini-2-flash-search", "gpt-4o-search-preview", "gemini-3-flash-search":
 		return []string{"free", "standard", "premium", "batya", "business"}
 	default:
 		return nil
@@ -186,7 +197,7 @@ func textRuntimeNote(modelID string) string {
 		return "free 可用，3 点/次"
 	case "claude-4.6-sonnet":
 		return "free 可用，4 点/次"
-	case "perplexity", "gemini-2-flash-search", "gemini-3-flash-search":
+	case "perplexity", "gemini-2-flash-search", "gpt-4o-search-preview", "gemini-3-flash-search":
 		return "free 可用，带联网"
 	default:
 		return ""
@@ -206,7 +217,7 @@ func imageEditAccess(modelID string) string {
 
 func imageAccessTiers(modelID string) []string {
 	switch strings.TrimSpace(modelID) {
-	case "gpt-image-1.5", "ideogram", "google-nano-banana", "qwen-lora", "bytedance-seedream":
+	case "gpt-image-1.5", "ideogram", "google-nano-banana", "google-nano-banana-2", "qwen-lora", "bytedance-seedream":
 		return []string{"free", "standard", "premium", "batya", "business"}
 	case "gpt-image-1.5-high":
 		return []string{"premium", "batya", "business"}
@@ -248,6 +259,8 @@ func imageRuntimeNote(modelID string) string {
 	switch strings.TrimSpace(modelID) {
 	case "google-nano-banana":
 		return "默认改图"
+	case "google-nano-banana-2":
+		return "free 可用；较 nano-banana 更贵"
 	case "qwen-lora":
 		return "最低成本改图"
 	case "gpt-image-1.5":
@@ -269,6 +282,8 @@ func imageRouteAdvice(modelID string) string {
 		return "适合高细节生图，不建议作为默认改图入口"
 	case "google-nano-banana":
 		return "适合默认改图与低门槛多图操作"
+	case "google-nano-banana-2":
+		return "适合质量优先的免费改图/拼图，但成本高于 nano-banana"
 	case "qwen-lora":
 		return "适合最低成本改图/拼图测试"
 	case "ideogram":

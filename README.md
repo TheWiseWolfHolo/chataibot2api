@@ -24,10 +24,12 @@ OpenAI-compatible image and text proxy with an account-pool admin console, Docke
   - default text model: `gpt-4.1-nano`
   - default image generation model: `gpt-image-1.5`
   - default image edit model: `google-nano-banana`
+  - current free-tier model list also includes `gpt-4o-search-preview` and `google-nano-banana-2`
 - Current image-route pricing / access hints synced from upstream catalog:
   - `gpt-image-1.5`: 生图 `12`，改图 `17`，拼图 `2图22 / 3图27 / 4图32`，free 可见
   - `gpt-image-1.5-high`: 生图 `40`，改图 `50`，拼图 `2图60 / 3图70 / 4图80`，premium / batya / business
   - `google-nano-banana`: 生图 `15`，改图 `15`，拼图 `2图20 / 3图25 / 4图30`，适合作为默认改图入口
+  - `google-nano-banana-2`: 生图 `30`，改图 `30`，拼图 `2图40 / 3图50 / 4图60`，free 可见但成本高于 `google-nano-banana`
   - `qwen-lora`: 生图/改图/拼图统一 `2`，适合作为最低成本改图测试
   - `ideogram`: 仅生图
   - `bytedance-seedream`: 仅生图
@@ -36,6 +38,7 @@ OpenAI-compatible image and text proxy with an account-pool admin console, Docke
   - model omitted + single-image edit → `google-nano-banana`
   - model omitted + multi-image merge → `gpt-image-1.5`
 - Text path now uses model-aware account selection and retries on timeout / EOF / transport resets instead of assuming every account supports every text model equally.
+- Admin catalog UI shows the minimum required tier instead of rendering every inherited tier badge.
 
 ## Required environment variables
 

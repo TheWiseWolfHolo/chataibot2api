@@ -45,7 +45,7 @@ var textModelRouter = map[string]TextModelConfig{
 	"gpt-5.4-high":           {Cost: 30, Hidden: true},
 	"gpt-5.4-pro":            {Cost: 70, Hidden: true},
 	"o4-mini-deep-research":  {Cost: 50, Internet: true, Hidden: true},
-	"gpt-4o-search-preview":  {Cost: 15, Internet: true, Hidden: true},
+	"gpt-4o-search-preview":  {Cost: 15, Internet: true},
 	"perplexity-pro":         {Cost: 20, Internet: true, Hidden: true},
 	"perplexity":             {Cost: 2, Internet: true},
 	"gemini-2-flash-search":  {Cost: 2, Internet: true},

@@ -528,23 +528,20 @@ func TestModelsEndpointListsSupportedModels(t *testing.T) {
 	for _, item := range resp.Data {
 		modelIDs[item.ID] = struct{}{}
 	}
-	if _, ok := modelIDs["gpt-image-1.5-high"]; !ok {
-		t.Fatalf("expected gpt-image-1.5-high in model list, got %+v", resp.Data)
-	}
 	if _, ok := modelIDs["gpt-4.1"]; !ok {
 		t.Fatalf("expected gpt-4.1 in model list, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["google-nano-banana"]; !ok {
 		t.Fatalf("expected google-nano-banana in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["gpt-4o-search-preview"]; ok {
-		t.Fatalf("expected gated model gpt-4o-search-preview to be omitted, got %+v", resp.Data)
+	if _, ok := modelIDs["gpt-4o-search-preview"]; !ok {
+		t.Fatalf("expected gpt-4o-search-preview in model list, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["google-nano-banana-pro"]; ok {
 		t.Fatalf("expected gated model google-nano-banana-pro to be omitted, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["google-nano-banana-2"]; ok {
-		t.Fatalf("expected gated model google-nano-banana-2 to be omitted, got %+v", resp.Data)
+	if _, ok := modelIDs["google-nano-banana-2"]; !ok {
+		t.Fatalf("expected google-nano-banana-2 in model list, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["midjourney-7"]; ok {
 		t.Fatalf("expected gated model midjourney-7 to be omitted, got %+v", resp.Data)
@@ -1932,8 +1929,14 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"access_tiers":["free","standard","premium","batya","business"]`) {
 		t.Fatalf("expected access tiers metadata in catalog, got %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"minimum_tier":"free"`) {
+		t.Fatalf("expected minimum tier metadata in catalog, got %s", rec.Body.String())
+	}
 	if !strings.Contains(rec.Body.String(), `"gpt-image-1.5"`) {
 		t.Fatalf("expected image model in catalog, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"google-nano-banana-2"`) {
+		t.Fatalf("expected google-nano-banana-2 in image catalog, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"edit_access":"cost-higher-than-generate"`) {
 		t.Fatalf("expected higher-cost edit metadata for gpt-image-1.5, got %s", rec.Body.String())

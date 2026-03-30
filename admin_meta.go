@@ -45,6 +45,7 @@ type AdminModelInfo struct {
 	ID            string   `json:"id"`
 	Cost          int      `json:"cost"`
 	Category      string   `json:"category"`
+	MinimumTier   string   `json:"minimum_tier,omitempty"`
 	Internet      bool     `json:"internet,omitempty"`
 	SupportsEdit  bool     `json:"supports_edit,omitempty"`
 	SupportsMerge bool     `json:"supports_merge,omitempty"`

@@ -177,6 +177,14 @@ function planTierPill(tier) {
   return modelCapabilityPill(meta.label, meta.tone);
 }
 
+function minimumTierPill(item) {
+  const tier = String(item?.minimum_tier || item?.access_tiers?.[0] || '').trim();
+  if (!tier) {
+    return '<span class="subtle">—</span>';
+  }
+  return planTierPill(tier);
+}
+
 function toneForStatus(status) {
   switch (status) {
     case 'near-empty':
@@ -610,9 +618,6 @@ function modelTableRows(models, type) {
 
   return models.map((item) => {
     const capabilities = [];
-    const access = Array.isArray(item.access_tiers)
-      ? item.access_tiers.map((tier) => planTierPill(tier))
-      : [];
     let costDetail = `生图 ${escapeHtml(String(item.cost))}`;
 
     if (type === 'text') {
@@ -658,7 +663,7 @@ function modelTableRows(models, type) {
       <tr>
         <td class="model-name">${escapeHtml(item.id)}</td>
         <td>${type === 'text' ? '文本' : '图片'}</td>
-        <td><div class="model-capabilities">${access.join('')}</div></td>
+        <td><div class="model-capabilities">${minimumTierPill(item)}</div></td>
         <td><div class="model-capabilities">${capabilities.join('')}</div></td>
         <td>${costDetail}</td>
       </tr>
@@ -678,7 +683,7 @@ function renderModels() {
         <div class="table-scroll">
           <table class="model-table">
             <thead>
-              <tr><th>模型</th><th>类型</th><th>层级</th><th>能力</th><th>价格</th></tr>
+              <tr><th>模型</th><th>类型</th><th>最低层级</th><th>能力</th><th>价格</th></tr>
             </thead>
             <tbody>${modelTableRows(catalog.text_models, 'text')}</tbody>
           </table>
@@ -692,7 +697,7 @@ function renderModels() {
         <div class="table-scroll">
           <table class="model-table">
             <thead>
-              <tr><th>模型</th><th>类型</th><th>层级</th><th>能力</th><th>价格</th></tr>
+              <tr><th>模型</th><th>类型</th><th>最低层级</th><th>能力</th><th>价格</th></tr>
             </thead>
             <tbody>${modelTableRows(catalog.image_models, 'image')}</tbody>
           </table>
