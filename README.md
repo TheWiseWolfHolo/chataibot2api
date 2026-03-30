@@ -18,8 +18,14 @@ OpenAI-compatible image and text proxy with an account-pool admin console, Docke
 
 ## Runtime model notes
 
-- `gpt-image-1.5-high` supports normal image generation through `chat/completions`.
-- As of the current runtime verification, **edit-style requests** for both `gpt-image-1.5` and `gpt-image-1.5-high` may return upstream `403` membership errors on:
+- Current chat-route smoke status:
+  - `google-nano-banana`: chat 生图可用，chat 改图可用
+  - `qwen-lora`: chat 生图可用，chat 改图可用
+  - `ideogram`: chat 生图可用，chat 改图不支持
+  - `bytedance-seedream`: chat 改图不支持；本次最小生图 smoke 在 20 秒硬超时内未返回
+  - `gpt-image-1.5`: chat 生图可走，chat 改图受上游会员/账号资格限制
+  - `gpt-image-1.5-high`: chat 生图可走，chat 改图受上游会员/账号资格限制
+- For both `gpt-image-1.5` and `gpt-image-1.5-high`, edit-style requests currently return upstream `403` membership errors on:
   - `POST /v1/chat/completions` with `image_url`
   - `POST /v1/images/generations` with `image`
 - The admin catalog therefore marks these GPT image edit capabilities as **subscription-gated**, instead of treating them as unconditional edit support.

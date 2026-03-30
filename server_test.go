@@ -1570,6 +1570,15 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"edit_access":"subscription-gated"`) {
 		t.Fatalf("expected subscription-gated edit access metadata, got %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"runtime_note":"chat改图可用"`) {
+		t.Fatalf("expected runtime note for supported edit models, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"runtime_note":"仅chat生图"`) {
+		t.Fatalf("expected runtime note for generate-only models, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"runtime_note":"chat改图需会员"`) {
+		t.Fatalf("expected runtime note for subscription-gated models, got %s", rec.Body.String())
+	}
 	if !strings.Contains(rec.Body.String(), `"low_quota_threshold":10`) {
 		t.Fatalf("expected low quota threshold metadata, got %s", rec.Body.String())
 	}
@@ -1653,6 +1662,9 @@ func TestAdminDashboardAssetContainsQuotaEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(body, "edit_access") || !strings.Contains(body, "改图需会员") {
 		t.Fatalf("expected edit access gating in admin asset, got %s", body)
+	}
+	if !strings.Contains(body, "runtime_note") || !strings.Contains(body, "item.runtime_note") {
+		t.Fatalf("expected runtime notes in admin asset, got %s", body)
 	}
 	if !strings.Contains(body, "runProbeCurrentPage") {
 		t.Fatalf("expected current-page probe behavior, got %s", body)

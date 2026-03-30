@@ -586,6 +586,14 @@ function modelTableRows(models, type) {
       if (item.supports_merge) {
         capabilities.push(modelCapabilityPill('拼图', 'warn'));
       }
+      if (item.runtime_note) {
+        const noteTone = item.runtime_note.includes('可用')
+          ? 'good'
+          : item.runtime_note.includes('会员')
+            ? 'warn'
+            : '';
+        capabilities.push(modelCapabilityPill(item.runtime_note, noteTone));
+      }
     }
 
     return `

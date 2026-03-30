@@ -134,6 +134,7 @@ func (a *App) AdminCatalog() AdminCatalog {
 			SupportsEdit:  strings.TrimSpace(cfg.EditMode) != "",
 			SupportsMerge: strings.TrimSpace(cfg.MergeMode) != "",
 			EditAccess:    imageEditAccess(modelID),
+			RuntimeNote:   imageRuntimeNote(modelID),
 		})
 	}
 	sort.Slice(catalog.ImageModels, func(i, j int) bool {
@@ -147,6 +148,19 @@ func imageEditAccess(modelID string) string {
 	switch strings.TrimSpace(modelID) {
 	case "gpt-image-1.5", "gpt-image-1.5-high":
 		return "subscription-gated"
+	default:
+		return ""
+	}
+}
+
+func imageRuntimeNote(modelID string) string {
+	switch strings.TrimSpace(modelID) {
+	case "google-nano-banana", "qwen-lora":
+		return "chat改图可用"
+	case "gpt-image-1.5", "gpt-image-1.5-high":
+		return "chat改图需会员"
+	case "ideogram", "bytedance-seedream":
+		return "仅chat生图"
 	default:
 		return ""
 	}
