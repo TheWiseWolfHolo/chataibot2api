@@ -29,13 +29,16 @@ type fakePool struct {
 	exported            []ExportedAccount
 	adminRows           []AdminQuotaRow
 	fillTask            FillTaskSnapshot
+	stopFillTask        FillTaskSnapshot
 	pruneResult         PruneSummary
 	importResult        ImportPoolResult
 	restoreResult       RestorePoolResult
 	imported            []*Account
 	restored            []*Account
 	fillCounts          []int
+	stopFillTaskIDs     []string
 	pruneCalls          int
+	stopFillErr         error
 	restoreErr          error
 }
 
@@ -127,6 +130,22 @@ func (f *fakePool) StartFillTask(count int) FillTaskSnapshot {
 		}
 	}
 	return task
+}
+
+func (f *fakePool) StopFillTask(taskID string) (FillTaskSnapshot, error) {
+	f.stopFillTaskIDs = append(f.stopFillTaskIDs, taskID)
+	if f.stopFillErr != nil {
+		return FillTaskSnapshot{}, f.stopFillErr
+	}
+
+	task := f.stopFillTask
+	if task.ID == "" {
+		task = FillTaskSnapshot{
+			ID:     taskID,
+			Status: "stopped",
+		}
+	}
+	return task, nil
 }
 
 func (f *fakePool) Prune() PruneSummary {
@@ -755,6 +774,31 @@ func TestImagesGenerationsDefaultsToGoogleNanoBananaForEditRequests(t *testing.T
 	}
 	if backend.lastEditMode != "edit_google_nano_banana" {
 		t.Fatalf("expected default edit route to use GOOGLE-nano-banana, got mode=%q", backend.lastEditMode)
+	}
+}
+
+func TestImagesGenerationsResolvesPublicImageModelIDs(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"gpt-image-1.5",
+		"prompt":"draw a cat hacker"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if pool.acquiredCost != 12 {
+		t.Fatalf("expected GPT_IMAGE_1_5 cost 12, got %d", pool.acquiredCost)
+	}
+	if backend.lastModel != "GPT_IMAGE_1_5" || backend.lastVersion != "" {
+		t.Fatalf("expected public model id to resolve to GPT_IMAGE_1_5, got provider=%q version=%q", backend.lastModel, backend.lastVersion)
 	}
 }
 
@@ -1582,6 +1626,7 @@ func TestAdminFillAndPruneEndpointsUsePoolManager(t *testing.T) {
 
 	pool, _, handler := newTestHandler()
 	pool.fillTask = FillTaskSnapshot{ID: "task-42", Requested: 3, Status: "running"}
+	pool.stopFillTask = FillTaskSnapshot{ID: "task-42", Requested: 3, Completed: 1, Status: "stopping"}
 	pool.pruneResult = PruneSummary{Checked: 4, Removed: 2, Remaining: 2}
 
 	fillReq := httptest.NewRequest(http.MethodPost, "/v1/admin/pool/fill", strings.NewReader(`{"count":3}`))
@@ -1597,6 +1642,21 @@ func TestAdminFillAndPruneEndpointsUsePoolManager(t *testing.T) {
 	}
 	if !strings.Contains(fillRecorder.Body.String(), `"task_id":"task-42"`) {
 		t.Fatalf("expected task id in response, got %s", fillRecorder.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/v1/admin/pool/fill/stop", strings.NewReader(`{"task_id":"task-42"}`))
+	stopReq.Header.Set("Authorization", "Bearer admin-token")
+	stopReq.Header.Set("Content-Type", "application/json")
+	stopRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(stopRecorder, stopReq)
+	if stopRecorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, stopRecorder.Code, stopRecorder.Body.String())
+	}
+	if len(pool.stopFillTaskIDs) != 1 || pool.stopFillTaskIDs[0] != "task-42" {
+		t.Fatalf("expected stop task id task-42, got %v", pool.stopFillTaskIDs)
+	}
+	if !strings.Contains(stopRecorder.Body.String(), `"status":"stopping"`) {
+		t.Fatalf("expected stop status in response, got %s", stopRecorder.Body.String())
 	}
 
 	pruneReq := httptest.NewRequest(http.MethodPost, "/v1/admin/pool/prune", nil)
@@ -2070,6 +2130,9 @@ func TestAdminDashboardAssetContainsQuotaEndpoints(t *testing.T) {
 	if !strings.Contains(body, "/v1/admin/pool/fill") {
 		t.Fatalf("expected fill endpoint usage, got %s", body)
 	}
+	if !strings.Contains(body, "/v1/admin/pool/fill/stop") {
+		t.Fatalf("expected fill stop endpoint usage, got %s", body)
+	}
 	if !strings.Contains(body, "toggleJwtVisibility") {
 		t.Fatalf("expected JWT expand behavior, got %s", body)
 	}
@@ -2090,6 +2153,9 @@ func TestAdminDashboardAssetContainsQuotaEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(body, "runFill") {
 		t.Fatalf("expected fill action behavior, got %s", body)
+	}
+	if !strings.Contains(body, "runStopFill") {
+		t.Fatalf("expected fill stop action behavior, got %s", body)
 	}
 }
 

@@ -34,6 +34,7 @@ type PoolManager interface {
 	Status() PoolStatus
 	AdminQuotaRows() []AdminQuotaRow
 	StartFillTask(count int) FillTaskSnapshot
+	StopFillTask(taskID string) (FillTaskSnapshot, error)
 	Prune() PruneSummary
 	ImportAccounts(accounts []*Account) ImportPoolResult
 	RestoreAccounts(accounts []*Account) (RestorePoolResult, error)

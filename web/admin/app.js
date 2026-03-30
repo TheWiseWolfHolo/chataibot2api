@@ -29,6 +29,7 @@ const state = {
   session: null,
   meta: null,
   snapshot: null,
+  poolStatus: null,
   catalog: null,
   migration: null,
   probeOverlay: new Map(),
@@ -49,6 +50,7 @@ const state = {
   refreshing: false,
   probing: false,
   filling: false,
+  stoppingFill: false,
   bannerError: '',
 };
 
@@ -328,14 +330,40 @@ function renderQuotaOverview() {
   ].join('');
 }
 
+function fillTaskStatusLabel(status) {
+  switch (status) {
+    case 'running':
+      return '补号中';
+    case 'stopping':
+      return '停止中';
+    case 'stopped':
+      return '已停止';
+    case 'completed':
+      return '已完成';
+    default:
+      return status || '未知状态';
+  }
+}
+
+function currentFillTask() {
+  const tasks = Array.isArray(state.poolStatus?.tasks) ? state.poolStatus.tasks : [];
+  return tasks.find((task) => task?.status === 'running' || task?.status === 'stopping') || null;
+}
+
 function renderQuotaTableTools() {
   const rows = getFilteredRows();
   const { page, totalPages, pagedRows } = getPaginationState(rows);
   const pageProbeDisabled = state.probing || pagedRows.length === 0 ? 'disabled' : '';
   const customProbeDisabled = state.probing || rows.length === 0 ? 'disabled' : '';
+  const activeFillTask = currentFillTask();
+  const hasActiveFillTask = Boolean(activeFillTask);
   const fillDisabled = state.filling ? 'disabled' : '';
+  const stopFillDisabled = state.stoppingFill || !hasActiveFillTask ? 'disabled' : '';
   const fillCount = toPositiveInt(state.fillCount, 30);
   const probeLimit = Math.min(toPositiveInt(state.probeLimit, state.pagination.pageSize), Math.max(rows.length, 1));
+  const fillTaskPill = activeFillTask
+    ? pill(`任务 ${escapeHtml(activeFillTask.id)} · ${fillTaskStatusLabel(activeFillTask.status)} · ${formatCount(activeFillTask.completed || 0)}/${formatCount(activeFillTask.requested || 0)}`, activeFillTask.status === 'stopping' ? 'warn' : '')
+    : '';
   quotaTableTools.innerHTML = `
     <div class="action-row quota-toolbar" style="margin-bottom: 16px; flex-wrap: wrap; align-items: end; gap: 12px;">
       <label class="field" style="min-width: 150px;">
@@ -384,6 +412,7 @@ function renderQuotaTableTools() {
         <input id="fillCountInput" type="number" min="1" step="1" value="${escapeHtml(String(fillCount))}" />
       </label>
       <button type="button" class="button secondary" id="fillBtn" ${fillDisabled}>${state.filling ? '补号中' : '开始补号'}</button>
+      <button type="button" class="button danger" id="stopFillBtn" ${stopFillDisabled}>${state.stoppingFill ? '停止中' : '停止补号'}</button>
       <button type="button" class="button primary" id="probePageBtn" ${pageProbeDisabled}>${state.probing ? '核验中' : `核验当前页 (${pagedRows.length})`}</button>
       <label class="field" style="min-width: 140px;">
         <span>核验前 N 条</span>
@@ -394,6 +423,7 @@ function renderQuotaTableTools() {
     <div class="strip">
       ${pill(`当前筛选 ${rows.length} 条`)}
       ${pill(`当前页 ${page} / ${totalPages}`)}
+      ${fillTaskPill}
     </div>
   `;
 
@@ -434,6 +464,7 @@ function renderQuotaTableTools() {
     state.probeLimit = toPositiveInt(event.target.value, state.probeLimit || state.pagination.pageSize);
   });
   document.getElementById('fillBtn')?.addEventListener('click', runFill);
+  document.getElementById('stopFillBtn')?.addEventListener('click', runStopFill);
   document.getElementById('probePageBtn')?.addEventListener('click', runProbeCurrentPage);
   document.getElementById('probeLimitBtn')?.addEventListener('click', runProbeCustomLimit);
 }
@@ -611,6 +642,33 @@ async function runFill() {
   }
 }
 
+async function runStopFill() {
+  const task = currentFillTask();
+  if (!task || state.stoppingFill) {
+    return;
+  }
+
+  state.stoppingFill = true;
+  renderQuotaTableTools();
+  try {
+    const payload = await fetchJSON('/v1/admin/pool/fill/stop', {
+      method: 'POST',
+      body: JSON.stringify({ task_id: task.id }),
+    });
+    pushLog(`补号任务已请求停止：task=${payload.task_id || task.id} status=${payload.status || 'stopped'}`);
+    await refreshAll();
+  } catch (error) {
+    if (error.status === 401) {
+      window.location.replace('/admin/login');
+      return;
+    }
+    pushLog(`停止补号失败：${error.message}`, true);
+  } finally {
+    state.stoppingFill = false;
+    renderQuotaTableTools();
+  }
+}
+
 function modelTableRows(models, type) {
   if (!models?.length) {
     return `<tr><td colspan="5" class="subtle">暂无${type === 'text' ? '文本' : '图片'}模型</td></tr>`;
@@ -779,9 +837,10 @@ async function refreshAll() {
       return;
     }
 
-    const [meta, snapshot, catalog, migration] = await Promise.all([
+    const [meta, snapshot, poolStatus, catalog, migration] = await Promise.all([
       fetchJSON('/v1/admin/meta', { method: 'GET' }),
       fetchJSON('/v1/admin/quota/snapshot', { method: 'GET' }),
+      fetchJSON('/v1/admin/pool', { method: 'GET' }),
       fetchJSON('/v1/admin/catalog', { method: 'GET' }),
       fetchJSON('/v1/admin/migration/status', { method: 'GET' }),
     ]);
@@ -790,6 +849,7 @@ async function refreshAll() {
     state.session = session;
     state.meta = meta;
     state.snapshot = snapshot;
+    state.poolStatus = poolStatus;
     state.catalog = catalog;
     state.migration = migration;
     state.probeOverlay.clear();

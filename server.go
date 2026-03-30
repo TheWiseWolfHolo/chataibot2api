@@ -33,6 +33,7 @@ func NewServerHandler(cfg Config, app *App) http.Handler {
 	mux.HandleFunc("/v1/admin/session/logout", adminAuth.HandleSessionLogout)
 	mux.Handle("/v1/admin/pool", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolStatus)))
 	mux.Handle("/v1/admin/pool/fill", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolFill)))
+	mux.Handle("/v1/admin/pool/fill/stop", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolFillStop)))
 	mux.Handle("/v1/admin/pool/import", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolImport)))
 	mux.Handle("/v1/admin/pool/restore", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolRestore)))
 	mux.Handle("/v1/admin/pool/prune", adminAuth.RequireAPI(http.HandlerFunc(app.HandleAdminPoolPrune)))
@@ -58,6 +59,7 @@ func (a *App) HandleImagesGenerations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
+	req.Model = resolveRawModelID(req.Model)
 
 	resp, err := a.Generate(req)
 	if err != nil {
@@ -123,6 +125,46 @@ func (a *App) HandleAdminPoolFill(w http.ResponseWriter, r *http.Request) {
 		"task_id":   task.ID,
 		"requested": task.Requested,
 		"status":    task.Status,
+	})
+}
+
+func (a *App) HandleAdminPoolFillStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "Request body must be valid JSON", "invalid_request_error")
+		return
+	}
+	body.TaskID = strings.TrimSpace(body.TaskID)
+	if body.TaskID == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "task_id must be provided", "invalid_request_error")
+		return
+	}
+
+	task, err := a.pool.StopFillTask(body.TaskID)
+	if err != nil {
+		if err == errFillTaskNotFound {
+			writeOpenAIError(w, http.StatusNotFound, err.Error(), "invalid_request_error")
+			return
+		}
+		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "server_error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":     task.ID,
+		"requested":   task.Requested,
+		"completed":   task.Completed,
+		"failed":      task.Failed,
+		"status":      task.Status,
+		"started_at":  task.StartedAt,
+		"finished_at": task.FinishedAt,
 	})
 }
 

@@ -76,6 +76,8 @@ type RestorePoolResult struct {
 
 type registrationTask struct {
 	snapshot FillTaskSnapshot
+	cancelCh chan struct{}
+	stopOnce sync.Once
 }
 
 type pooledAccount struct {
@@ -129,6 +131,8 @@ type SimplePool struct {
 
 	tasks map[string]*registrationTask
 }
+
+var errFillTaskNotFound = errors.New("fill task not found")
 
 type PoolOptions struct {
 	LowWatermark         int
@@ -822,6 +826,7 @@ func (p *SimplePool) StartFillTask(count int) FillTaskSnapshot {
 			Status:    "running",
 			StartedAt: now,
 		},
+		cancelCh: make(chan struct{}),
 	}
 
 	p.mu.Lock()
@@ -830,6 +835,11 @@ func (p *SimplePool) StartFillTask(count int) FillTaskSnapshot {
 
 	go func() {
 		for i := 0; i < count; i++ {
+			if task.cancelled() {
+				p.finishFillTask(task, "stopped")
+				return
+			}
+
 			success, delay := p.createAndEnqueueAccount()
 
 			p.mu.Lock()
@@ -840,19 +850,94 @@ func (p *SimplePool) StartFillTask(count int) FillTaskSnapshot {
 			}
 			p.mu.Unlock()
 
-			if delay > 0 {
-				time.Sleep(delay)
+			if task.cancelled() {
+				p.finishFillTask(task, "stopped")
+				return
+			}
+
+			if delay > 0 && waitForDelayOrCancel(delay, task.cancelCh) {
+				p.finishFillTask(task, "stopped")
+				return
 			}
 		}
 
-		finishedAt := time.Now()
-		p.mu.Lock()
-		task.snapshot.Status = "completed"
-		task.snapshot.FinishedAt = &finishedAt
-		p.mu.Unlock()
+		p.finishFillTask(task, "completed")
 	}()
 
 	return task.snapshot
+}
+
+func (p *SimplePool) StopFillTask(taskID string) (FillTaskSnapshot, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return FillTaskSnapshot{}, errFillTaskNotFound
+	}
+
+	p.mu.Lock()
+	task, ok := p.tasks[taskID]
+	if !ok {
+		p.mu.Unlock()
+		return FillTaskSnapshot{}, errFillTaskNotFound
+	}
+
+	if task.snapshot.Status == "running" {
+		task.snapshot.Status = "stopping"
+		task.stop()
+	}
+	snapshot := task.snapshot
+	p.mu.Unlock()
+
+	return snapshot, nil
+}
+
+func (p *SimplePool) finishFillTask(task *registrationTask, status string) {
+	if task == nil {
+		return
+	}
+
+	finishedAt := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	task.snapshot.Status = status
+	task.snapshot.FinishedAt = &finishedAt
+}
+
+func (t *registrationTask) stop() {
+	if t == nil {
+		return
+	}
+	t.stopOnce.Do(func() {
+		close(t.cancelCh)
+	})
+}
+
+func (t *registrationTask) cancelled() bool {
+	if t == nil || t.cancelCh == nil {
+		return false
+	}
+
+	select {
+	case <-t.cancelCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForDelayOrCancel(delay time.Duration, cancel <-chan struct{}) bool {
+	if delay <= 0 || cancel == nil {
+		return false
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return false
+	case <-cancel:
+		return true
+	}
 }
 
 func (p *SimplePool) ImportAccounts(accounts []*Account) ImportPoolResult {

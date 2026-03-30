@@ -97,6 +97,86 @@ func TestSimplePoolStartFillTaskCreatesAccountsAsynchronously(t *testing.T) {
 	t.Fatalf("expected fill task to complete before deadline, latest status=%+v", pool.Status())
 }
 
+func TestSimplePoolStopFillTaskStopsFurtherRegistrations(t *testing.T) {
+	t.Helper()
+
+	firstCompleted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	registerCalls := 0
+	pool := NewSimplePoolWithOptions(10, 0, func() (string, error) {
+		registerCalls++
+		switch registerCalls {
+		case 1:
+			close(firstCompleted)
+			return "jwt-stop-1", nil
+		case 2:
+			close(secondStarted)
+			<-releaseSecond
+			return "jwt-stop-2", nil
+		default:
+			return fmt.Sprintf("jwt-stop-%d", registerCalls), nil
+		}
+	}, func(_ string) (int, error) {
+		return 65, nil
+	}, PoolOptions{})
+
+	task := pool.StartFillTask(5)
+	if task.ID == "" {
+		t.Fatalf("expected task id, got empty")
+	}
+
+	select {
+	case <-firstCompleted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected first registration to complete")
+	}
+
+	select {
+	case <-secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected second registration to start")
+	}
+
+	stoppedTask, err := pool.StopFillTask(task.ID)
+	if err != nil {
+		t.Fatalf("expected stop to succeed, got %v", err)
+	}
+	if stoppedTask.ID != task.ID {
+		t.Fatalf("expected stopped task id %q, got %+v", task.ID, stoppedTask)
+	}
+	if stoppedTask.Status != "stopping" && stoppedTask.Status != "stopped" {
+		t.Fatalf("expected stop to return stopping/stopped, got %+v", stoppedTask)
+	}
+
+	close(releaseSecond)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status := pool.Status()
+		if len(status.Tasks) == 0 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		snapshot := status.Tasks[0]
+		if snapshot.Status == "stopped" {
+			if snapshot.Completed != 2 {
+				t.Fatalf("expected stop to preserve the in-flight registration and halt before a third one, got %+v", snapshot)
+			}
+			if registerCalls != 2 {
+				t.Fatalf("expected no registration calls after the in-flight one, got %d", registerCalls)
+			}
+			if status.ReadyCount != 2 {
+				t.Fatalf("expected exactly two ready accounts after stop, got %+v", status)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected fill task to stop before deadline, latest status=%+v", pool.Status())
+}
+
 func TestSimplePoolPruneRemovesInvalidAccounts(t *testing.T) {
 	t.Helper()
 
