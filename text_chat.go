@@ -35,6 +35,35 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 			return nil
 		})
 		if err != nil {
+			if !writer.started && (isTextTimeoutError(err) || isRetryableTextTransportError(err) || errorTypeForError(err, "") == "upstream_timeout") {
+				w.Header().Set("X-Holo-Text-Stream-Mode", "synthetic-fallback")
+				resp, fallbackErr := a.CompleteTextChat(req)
+				if fallbackErr != nil {
+					writeOpenAIError(w, statusCodeForError(fallbackErr), fallbackErr.Error(), errorTypeForError(fallbackErr, "generation_error"))
+					return
+				}
+				if strings.TrimSpace(resp.ChatModel) != "" {
+					writer.model = publicModelID(resp.ChatModel)
+				}
+				if strings.TrimSpace(resp.ReasoningContent) != "" {
+					if err := writer.WriteReasoningDelta(resp.ReasoningContent); err != nil {
+						if !writer.started {
+							writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+						}
+						return
+					}
+				}
+				if err := writer.WriteDelta(resp.Content); err != nil {
+					if !writer.started {
+						writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+					}
+					return
+				}
+				if err := writer.Finish(); err != nil && !writer.started {
+					writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+				}
+				return
+			}
 			if !writer.started {
 				writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 			}

@@ -13,13 +13,15 @@ import (
 )
 
 const (
-	chataibotAPIBaseURL = "https://chataibot.pro/api"
-	upstreamFromWeb     = 1
-	textContextTimeout  = 5 * time.Second
-	textRequestTimeout  = 20 * time.Second
-	textThinkingTimeout = 45 * time.Second
-	textJobPollInterval = 2 * time.Second
-	textJobPollAttempts = 8
+	chataibotAPIBaseURL       = "https://chataibot.pro/api"
+	upstreamFromWeb           = 1
+	textContextTimeout        = 5 * time.Second
+	textRequestTimeout        = 20 * time.Second
+	textThinkingTimeout       = 45 * time.Second
+	textStreamTimeout         = 6 * time.Second
+	textStreamThinkingTimeout = 10 * time.Second
+	textJobPollInterval       = 2 * time.Second
+	textJobPollAttempts       = 8
 )
 
 func (c *APIClient) CreateChatContext(model, title, jwtToken string) (int, error) {
@@ -99,7 +101,7 @@ func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken 
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	slowClient := *c.httpClient
-	slowClient.Timeout = textRequestTimeoutForModel(req.Model)
+	slowClient.Timeout = textStreamTimeoutForModel(req.Model)
 
 	resp, err := slowClient.Do(httpReq)
 	if err != nil {
@@ -203,6 +205,21 @@ func textRequestTimeoutForModel(model string) time.Duration {
 		return textThinkingTimeout
 	default:
 		return textRequestTimeout
+	}
+}
+
+func textStreamTimeoutForModel(model string) time.Duration {
+	switch strings.TrimSpace(model) {
+	case "gpt-5.1", "gpt-5.2", "gpt-5.4",
+		"gpt-5.1-high", "gpt-5.2-high", "gpt-5.4-high", "gpt-5.4-pro",
+		"o3", "o3-pro", "o4-mini-deep-research",
+		"qwen3-thinking-2507", "qwen3-max",
+		"gemini-pro", "gemini-3-pro", "gemini-3.1-pro",
+		"claude-3-opus", "claude-4.5-opus", "claude-4.6-opus",
+		"claude-3-sonnet-high", "claude-4.6-sonnet-high":
+		return textStreamThinkingTimeout
+	default:
+		return textStreamTimeout
 	}
 }
 

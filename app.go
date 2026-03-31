@@ -63,6 +63,7 @@ type App struct {
 
 const (
 	textRetryAttempts        = 3
+	textStreamRetryAttempts  = 1
 	textRetryCooldown        = 90 * time.Second
 	maxTextContinuationTurns = 2
 	minTruncationContentSize = 1200
@@ -579,7 +580,7 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 		return TextCompletionResult{}, newStatusError(http.StatusBadRequest, err.Error())
 	}
 
-	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
+	for attempt := 1; attempt <= textStreamRetryAttempts; attempt++ {
 		acc := a.acquireTextAccount(req.Model, requiredCost)
 		attemptStartedAt := time.Now()
 
@@ -590,14 +591,17 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 			if isTextModelUnsupportedError(err) {
 				a.markTextModelUnsupported(acc.JWT, req.Model)
 				a.pool.Release(acc)
-				if attempt < textRetryAttempts {
+				if attempt < textStreamRetryAttempts {
 					continue
 				}
 				return TextCompletionResult{}, wrapped
 			}
-			if shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
+			if shouldRetryTextBackendError(err) {
 				a.releaseTextAccount(acc, textRetryCooldown)
-				continue
+				if attempt < textStreamRetryAttempts {
+					continue
+				}
+				return TextCompletionResult{}, wrapped
 			}
 			a.pool.Release(acc)
 			return TextCompletionResult{}, wrapped
@@ -640,14 +644,17 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 			if !streamedAnyEvent && isTextModelUnsupportedError(err) {
 				a.markTextModelUnsupported(acc.JWT, req.Model)
 				a.pool.Release(acc)
-				if attempt < textRetryAttempts {
+				if attempt < textStreamRetryAttempts {
 					continue
 				}
 				return TextCompletionResult{}, wrapped
 			}
-			if !streamedAnyEvent && shouldRetryTextBackendError(err) && attempt < textRetryAttempts {
+			if !streamedAnyEvent && shouldRetryTextBackendError(err) {
 				a.releaseTextAccount(acc, textRetryCooldown)
-				continue
+				if attempt < textStreamRetryAttempts {
+					continue
+				}
+				return TextCompletionResult{}, wrapped
 			}
 			a.pool.Release(acc)
 			return TextCompletionResult{}, wrapped

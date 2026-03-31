@@ -1275,7 +1275,7 @@ func TestChatCompletionsStreamsReasoningContent(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsRetriesStreamingTimeoutBeforeFirstChunk(t *testing.T) {
+func TestChatCompletionsFallsBackAfterStreamingTimeoutBeforeFirstChunk(t *testing.T) {
 	t.Helper()
 
 	pool, backend, handler := newTestHandler()
@@ -1284,12 +1284,7 @@ func TestChatCompletionsRetriesStreamingTimeoutBeforeFirstChunk(t *testing.T) {
 		{JWT: "jwt-stream-healthy", Quota: 65},
 	}
 	backend.textStreamErrors = []error{fakeTimeoutError{}}
-	backend.textStreamEvents = []TextStreamEvent{
-		{Type: "botType", ChatModel: "gpt-4.1"},
-		{Type: "chunk", Delta: "stream"},
-		{Type: "chunk", Delta: "_ok"},
-	}
-	backend.textStreamResponse = TextCompletionResult{
+	backend.textResponse = TextCompletionResult{
 		ChatModel: "gpt-4.1",
 		Content:   "stream_ok",
 	}
@@ -1311,8 +1306,11 @@ func TestChatCompletionsRetriesStreamingTimeoutBeforeFirstChunk(t *testing.T) {
 	if len(pool.cooldowns) != 1 || pool.cooldowns[0].Account == nil || pool.cooldowns[0].Account.JWT != "jwt-stream-timeout" {
 		t.Fatalf("expected timed-out streaming account to be cooled down, got %+v", pool.cooldowns)
 	}
-	if len(backend.textStreamRequestJWTs) != 2 || backend.textStreamRequestJWTs[0] != "jwt-stream-timeout" || backend.textStreamRequestJWTs[1] != "jwt-stream-healthy" {
-		t.Fatalf("expected streaming retry to switch accounts, got %+v", backend.textStreamRequestJWTs)
+	if len(backend.textStreamRequestJWTs) != 1 || backend.textStreamRequestJWTs[0] != "jwt-stream-timeout" {
+		t.Fatalf("expected a single upstream streaming probe on the timeout account, got %+v", backend.textStreamRequestJWTs)
+	}
+	if len(backend.textRequestJWTs) != 1 || backend.textRequestJWTs[0] != "jwt-stream-healthy" {
+		t.Fatalf("expected completion fallback to switch accounts, got %+v", backend.textRequestJWTs)
 	}
 	if len(pool.observedTextResults) != 2 {
 		t.Fatalf("expected two streaming observations, got %+v", pool.observedTextResults)
@@ -1323,12 +1321,15 @@ func TestChatCompletionsRetriesStreamingTimeoutBeforeFirstChunk(t *testing.T) {
 	if pool.observedTextResults[1].JWT != "jwt-stream-healthy" || pool.observedTextResults[1].Err != nil {
 		t.Fatalf("expected second streaming observation to be successful, got %+v", pool.observedTextResults)
 	}
-	if !strings.Contains(recorder.Body.String(), `"content":"stream"`) || !strings.Contains(recorder.Body.String(), "[DONE]") {
-		t.Fatalf("expected successful streamed retry response, got %s", recorder.Body.String())
+	if recorder.Header().Get("X-Holo-Text-Stream-Mode") != "synthetic-fallback" {
+		t.Fatalf("expected explicit synthetic fallback header, got headers=%v", recorder.Header())
+	}
+	if !strings.Contains(recorder.Body.String(), `"content":"stream_ok"`) || !strings.Contains(recorder.Body.String(), "[DONE]") {
+		t.Fatalf("expected successful synthetic fallback stream response, got %s", recorder.Body.String())
 	}
 }
 
-func TestChatCompletionsRetriesStreamingEOFBeforeFirstChunk(t *testing.T) {
+func TestChatCompletionsFallsBackAfterStreamingEOFBeforeFirstChunk(t *testing.T) {
 	t.Helper()
 
 	pool, backend, handler := newTestHandler()
@@ -1337,11 +1338,7 @@ func TestChatCompletionsRetriesStreamingEOFBeforeFirstChunk(t *testing.T) {
 		{JWT: "jwt-stream-ok", Quota: 65},
 	}
 	backend.textStreamErrors = []error{io.EOF}
-	backend.textStreamEvents = []TextStreamEvent{
-		{Type: "botType", ChatModel: "gpt-4.1"},
-		{Type: "chunk", Delta: "stream"},
-	}
-	backend.textStreamResponse = TextCompletionResult{
+	backend.textResponse = TextCompletionResult{
 		ChatModel: "gpt-4.1",
 		Content:   "stream",
 	}
@@ -1363,8 +1360,14 @@ func TestChatCompletionsRetriesStreamingEOFBeforeFirstChunk(t *testing.T) {
 	if len(pool.cooldowns) != 1 || pool.cooldowns[0].Account == nil || pool.cooldowns[0].Account.JWT != "jwt-stream-eof" {
 		t.Fatalf("expected EOF streaming account to be cooled down, got %+v", pool.cooldowns)
 	}
-	if len(backend.textStreamRequestJWTs) != 2 || backend.textStreamRequestJWTs[0] != "jwt-stream-eof" || backend.textStreamRequestJWTs[1] != "jwt-stream-ok" {
-		t.Fatalf("expected streaming EOF retry to switch accounts, got %+v", backend.textStreamRequestJWTs)
+	if len(backend.textStreamRequestJWTs) != 1 || backend.textStreamRequestJWTs[0] != "jwt-stream-eof" {
+		t.Fatalf("expected a single upstream streaming probe on EOF account, got %+v", backend.textStreamRequestJWTs)
+	}
+	if len(backend.textRequestJWTs) != 1 || backend.textRequestJWTs[0] != "jwt-stream-ok" {
+		t.Fatalf("expected completion fallback to switch accounts after EOF, got %+v", backend.textRequestJWTs)
+	}
+	if recorder.Header().Get("X-Holo-Text-Stream-Mode") != "synthetic-fallback" {
+		t.Fatalf("expected explicit synthetic fallback header, got headers=%v", recorder.Header())
 	}
 }
 
