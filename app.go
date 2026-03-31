@@ -65,6 +65,8 @@ const (
 	textRetryAttempts        = 3
 	textStreamRetryAttempts  = 1
 	textRetryCooldown        = 90 * time.Second
+	imageRetryAttempts       = 2
+	imageRetryCooldown       = 90 * time.Second
 	maxTextContinuationTurns = 2
 	minTruncationContentSize = 1200
 )
@@ -432,37 +434,82 @@ func (a *App) Generate(req OpenAIImageReq) (OpenAIImageResp, error) {
 	}
 
 	ratio := parseRatio(req.Size)
-	acc := a.pool.Acquire(requiredCost)
-	defer a.pool.Release(acc)
-
-	if !a.backend.UpdateUserSettings(acc.JWT, ratio) {
-		return OpenAIImageResp{}, newStatusError(http.StatusInternalServerError, "Failed to update user settings")
-	}
-
-	var (
-		imgURL string
-		err    error
-	)
-
-	if isMergeMode {
-		imgURL, err = a.backend.MergeImage(req.Prompt, req.Images, modelCfg.MergeMode, acc.JWT)
-	} else if isEditMode {
-		imgData := req.Image
-		if imgData == "" {
-			imgData = req.Images[0]
+	imgURL, err := a.executeImageOperationWithRetry(requiredCost, ratio, func(jwt string) (string, error) {
+		if isMergeMode {
+			return a.backend.MergeImage(req.Prompt, req.Images, modelCfg.MergeMode, jwt)
 		}
-		imgURL, err = a.backend.EditImage(req.Prompt, imgData, modelCfg.EditMode, acc.JWT)
-	} else {
-		imgURL, err = a.backend.GenerateImage(req.Prompt, modelCfg.Provider, modelCfg.Version, acc.JWT)
-	}
+		if isEditMode {
+			imgData := req.Image
+			if imgData == "" {
+				imgData = req.Images[0]
+			}
+			return a.backend.EditImage(req.Prompt, imgData, modelCfg.EditMode, jwt)
+		}
+		return a.backend.GenerateImage(req.Prompt, modelCfg.Provider, modelCfg.Version, jwt)
+	})
 	if err != nil {
-		return OpenAIImageResp{}, wrapImageBackendError("Generation failed", err)
+		return OpenAIImageResp{}, err
 	}
 
 	return OpenAIImageResp{
 		Created: a.now().Unix(),
 		Data:    []ImageData{{URL: imgURL}},
 	}, nil
+}
+
+func (a *App) executeImageOperationWithRetry(requiredCost int, ratio string, run func(jwt string) (string, error)) (string, error) {
+	if a == nil || a.pool == nil || a.backend == nil {
+		return "", fmt.Errorf("app dependencies are not configured")
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= imageRetryAttempts; attempt++ {
+		acc := a.pool.Acquire(requiredCost)
+		if acc == nil {
+			return "", newStatusError(http.StatusInternalServerError, "image pool returned no account")
+		}
+
+		if !a.backend.UpdateUserSettings(acc.JWT, ratio) {
+			lastErr = newStatusError(http.StatusInternalServerError, "Failed to update user settings")
+			a.pool.Release(acc)
+			if attempt < imageRetryAttempts {
+				continue
+			}
+			return "", lastErr
+		}
+
+		startedAt := time.Now()
+		imgURL, err := run(acc.JWT)
+		if err == nil {
+			a.pool.Release(acc)
+			return imgURL, nil
+		}
+
+		lastErr = wrapImageBackendError("Generation failed", err)
+		switch {
+		case isUpstreamAccountLimitedError(err):
+			a.pool.Release(acc)
+			if attempt < imageRetryAttempts {
+				continue
+			}
+			return "", lastErr
+		case shouldRetryImageBackendError(err):
+			a.observeTextAccount(acc.JWT, startedAt, err)
+			a.releaseTextAccount(acc, imageRetryCooldown)
+			if attempt < imageRetryAttempts {
+				continue
+			}
+			return "", lastErr
+		default:
+			a.pool.Release(acc)
+			return "", lastErr
+		}
+	}
+
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", newTypedStatusError(http.StatusGatewayTimeout, "image generation timed out after retry", "upstream_timeout")
 }
 
 func defaultImageModelForRequest(isEditMode bool, isMergeMode bool) string {
@@ -977,6 +1024,13 @@ func wrapImageBackendError(prefix string, err error) error {
 	return newStatusError(http.StatusInternalServerError, fmt.Sprintf("%s: %v", prefix, err))
 }
 
+func shouldRetryImageBackendError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isTextTimeoutError(err) || isRetryableTextTransportError(err)
+}
+
 type statusError struct {
 	StatusCode int
 	Message    string
@@ -1084,6 +1138,10 @@ func isRetryableTextTransportError(err error) bool {
 }
 
 func isTextModelUnsupportedError(err error) bool {
+	return isUpstreamAccountLimitedError(err)
+}
+
+func isUpstreamAccountLimitedError(err error) bool {
 	if err == nil {
 		return false
 	}

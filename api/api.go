@@ -29,6 +29,7 @@ const (
 	defaultDistributionChannel = "web"
 	defaultAcceptLanguage      = "en"
 	defaultBrowserUserAgent    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+	defaultImageRequestTimeout = 2 * time.Minute
 )
 
 type RegisterRequest struct {
@@ -351,7 +352,7 @@ func (c *APIClient) GenerateImage(prompt, provider, version, jwtToken string) (s
 	req.Header.Set("User-Agent", defaultBrowserUserAgent)
 
 	slowClient := *c.httpClient
-	slowClient.Timeout = 5 * time.Minute
+	slowClient.Timeout = defaultImageRequestTimeout
 
 	fmt.Println("[*] 正在调用模型...")
 	resp, err := slowClient.Do(req)
@@ -429,7 +430,7 @@ func (c *APIClient) EditImage(prompt, base64Data, model, jwtToken string) (strin
 	req.Header.Set("User-Agent", defaultBrowserUserAgent)
 
 	slowClient := *c.httpClient
-	slowClient.Timeout = 5 * time.Minute
+	slowClient.Timeout = defaultImageRequestTimeout
 
 	fmt.Printf("[*] 正在上传图片并执行图生图任务...\n")
 	resp, err := slowClient.Do(req)
@@ -512,7 +513,7 @@ func (c *APIClient) MergeImage(prompt string, base64Images []string, mergeType, 
 	req.Header.Set("User-Agent", defaultBrowserUserAgent)
 
 	slowClient := *c.httpClient
-	slowClient.Timeout = 5 * time.Minute
+	slowClient.Timeout = defaultImageRequestTimeout
 
 	fmt.Printf("[*] 正在上传 %d 张图片并执行合并任务...\n", len(base64Images))
 	resp, err := slowClient.Do(req)

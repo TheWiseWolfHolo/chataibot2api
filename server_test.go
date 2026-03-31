@@ -186,21 +186,25 @@ func (f *fakePool) RestoreAccounts(accounts []*Account) (RestorePoolResult, erro
 }
 
 type fakeBackend struct {
-	updateCalled bool
-	lastRatio    string
-	lastPrompt   string
-	lastModel    string
-	lastVersion  string
-	lastEditMode string
-	lastMerge    string
-	lastImage    string
-	lastImages   []string
-	generateURL  string
-	editURL      string
-	mergeURL     string
-	generateErr  error
-	editErr      error
-	mergeErr     error
+	updateCalled      bool
+	lastRatio         string
+	lastPrompt        string
+	lastModel         string
+	lastVersion       string
+	generateJWT       string
+	generateJWTs      []string
+	generateErrs      []error
+	generateCallCount int
+	lastEditMode      string
+	lastMerge         string
+	lastImage         string
+	lastImages        []string
+	generateURL       string
+	editURL           string
+	mergeURL          string
+	generateErr       error
+	editErr           error
+	mergeErr          error
 
 	textContextModel string
 	textContextTitle string
@@ -239,10 +243,16 @@ func (f *fakeBackend) UpdateUserSettings(_ string, aspectRatio string) bool {
 	return true
 }
 
-func (f *fakeBackend) GenerateImage(prompt, provider, version, _ string) (string, error) {
+func (f *fakeBackend) GenerateImage(prompt, provider, version, jwtToken string) (string, error) {
 	f.lastPrompt = prompt
 	f.lastModel = provider
 	f.lastVersion = version
+	f.generateJWT = jwtToken
+	f.generateJWTs = append(f.generateJWTs, jwtToken)
+	f.generateCallCount++
+	if len(f.generateErrs) >= f.generateCallCount && f.generateErrs[f.generateCallCount-1] != nil {
+		return "", f.generateErrs[f.generateCallCount-1]
+	}
 	if f.generateErr != nil {
 		return "", f.generateErr
 	}
@@ -812,6 +822,80 @@ func TestImagesGenerationsResolvesPublicImageModelIDs(t *testing.T) {
 	}
 	if backend.lastModel != "GPT_IMAGE_1_5" || backend.lastVersion != "" {
 		t.Fatalf("expected public model id to resolve to GPT_IMAGE_1_5, got provider=%q version=%q", backend.lastModel, backend.lastVersion)
+	}
+}
+
+func TestImagesGenerationsRetriesTimeoutWithFreshAccount(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	pool.acquireQueue = []*Account{
+		{JWT: "jwt-image-timeout", Quota: 65},
+		{JWT: "jwt-image-healthy", Quota: 65},
+	}
+	backend.generateErrs = []error{fakeTimeoutError{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"gpt-image-1.5",
+		"prompt":"draw a blue cat icon"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.cooldowns) != 1 || pool.cooldowns[0].Account == nil || pool.cooldowns[0].Account.JWT != "jwt-image-timeout" {
+		t.Fatalf("expected timed-out image account to be cooled down, got %+v", pool.cooldowns)
+	}
+	if len(backend.generateJWTs) != 2 || backend.generateJWTs[0] != "jwt-image-timeout" || backend.generateJWTs[1] != "jwt-image-healthy" {
+		t.Fatalf("expected image timeout retry to switch accounts, got %+v", backend.generateJWTs)
+	}
+	if !strings.Contains(recorder.Body.String(), "https://img.example.com/generated.png") {
+		t.Fatalf("expected successful retried image response, got %s", recorder.Body.String())
+	}
+}
+
+func TestImagesGenerationsRetriesAccountLimitedErrorWithFreshAccount(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	pool.acquireQueue = []*Account{
+		{JWT: "jwt-image-limited", Quota: 65},
+		{JWT: "jwt-image-supported", Quota: 65},
+	}
+	backend.generateErrs = []error{
+		&protocol.UpstreamError{
+			StatusCode: http.StatusForbidden,
+			Message:    "A productive day! Subscribe to get more requests and access to advanced models",
+			Type:       "NotEnoughFreeLimitAnswerCountError",
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"grok-imagine-1.0",
+		"prompt":"draw a blue cat icon"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.cooldowns) != 0 {
+		t.Fatalf("expected account-limited image retry to release immediately without cooldown, got %+v", pool.cooldowns)
+	}
+	if len(backend.generateJWTs) != 2 || backend.generateJWTs[0] != "jwt-image-limited" || backend.generateJWTs[1] != "jwt-image-supported" {
+		t.Fatalf("expected image account-limited retry to switch accounts, got %+v", backend.generateJWTs)
+	}
+	if !strings.Contains(recorder.Body.String(), "https://img.example.com/generated.png") {
+		t.Fatalf("expected successful retried image response, got %s", recorder.Body.String())
 	}
 }
 
