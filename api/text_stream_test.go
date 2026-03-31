@@ -110,3 +110,21 @@ func TestTextTimeoutsForInternetModelsExceedRegularModels(t *testing.T) {
 		t.Fatalf("expected internet text stream timeout to exceed regular stream timeout, got regular=%s internet=%s", regularStream, internetStream)
 	}
 }
+
+func TestTextStreamTimeoutsAllowLongRunningStreams(t *testing.T) {
+	t.Helper()
+
+	regular := textStreamTimeoutForModel("gpt-4.1-nano")
+	internet := textStreamTimeoutForModel("gpt-4o-search-preview")
+	reasoning := textStreamTimeoutForModel("gpt-5.4")
+
+	if regular < 45*time.Second {
+		t.Fatalf("expected regular stream timeout to comfortably exceed short SSE responses, got %s", regular)
+	}
+	if internet < 90*time.Second {
+		t.Fatalf("expected internet/search stream timeout to allow slow first token and long fetches, got %s", internet)
+	}
+	if reasoning < 90*time.Second {
+		t.Fatalf("expected reasoning stream timeout to allow long-running generations, got %s", reasoning)
+	}
+}

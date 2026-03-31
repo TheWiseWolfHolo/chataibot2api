@@ -223,6 +223,8 @@ type fakeBackend struct {
 	textStreamEvents      []TextStreamEvent
 	textStreamResponse    TextCompletionResult
 	textStreamErrors      []error
+	textStreamTrailingErrors []error
+	textStreamBlockCh     chan struct{}
 	textStreamCallCount   int
 	textStreamErr         error
 
@@ -331,6 +333,9 @@ func (f *fakeBackend) StreamTextMessage(req UpstreamTextMessageRequest, jwtToken
 	if f.textStreamErr != nil {
 		return TextCompletionResult{}, f.textStreamErr
 	}
+	if f.textStreamBlockCh != nil {
+		<-f.textStreamBlockCh
+	}
 
 	events := append([]TextStreamEvent(nil), f.textStreamEvents...)
 	if len(events) == 0 {
@@ -344,6 +349,9 @@ func (f *fakeBackend) StreamTextMessage(req UpstreamTextMessageRequest, jwtToken
 		if err := emit(event); err != nil {
 			return TextCompletionResult{}, err
 		}
+	}
+	if len(f.textStreamTrailingErrors) >= f.textStreamCallCount && f.textStreamTrailingErrors[f.textStreamCallCount-1] != nil {
+		return TextCompletionResult{}, f.textStreamTrailingErrors[f.textStreamCallCount-1]
 	}
 
 	resp := f.textStreamResponse
@@ -1369,6 +1377,83 @@ func TestChatCompletionsFallsBackAfterStreamingEOFBeforeFirstChunk(t *testing.T)
 	if recorder.Header().Get("X-Holo-Text-Stream-Mode") != "synthetic-fallback" {
 		t.Fatalf("expected explicit synthetic fallback header, got headers=%v", recorder.Header())
 	}
+}
+
+func TestChatCompletionsFinishesStreamWhenUpstreamFailsAfterContentStarted(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	backend.textStreamEvents = []TextStreamEvent{
+		{Type: "botType", ChatModel: "gpt-5.4"},
+		{Type: "chunk", Delta: "partial"},
+	}
+	backend.textStreamTrailingErrors = []error{fakeTimeoutError{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"stream":true,
+		"messages":[{"role":"user","content":"Say hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, body)
+	}
+	if !strings.Contains(body, `"content":"partial"`) {
+		t.Fatalf("expected partial streamed content in body, got %s", body)
+	}
+	if !strings.Contains(body, `[DONE]`) {
+		t.Fatalf("expected stream to be finished even after upstream trailing failure, got %s", body)
+	}
+}
+
+func TestChatCompletionsEmitsImmediateRolePreludeForSlowFirstTokenModels(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	blockCh := make(chan struct{})
+	backend.textStreamBlockCh = blockCh
+	backend.textStreamEvents = []TextStreamEvent{
+		{Type: "botType", ChatModel: "gpt-5.4"},
+		{Type: "chunk", Delta: "later"},
+	}
+	backend.textStreamResponse = TextCompletionResult{
+		ChatModel: "gpt-5.4",
+		Content:   "later",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"stream":true,
+		"messages":[{"role":"user","content":"Say hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+
+	go func() {
+		handler.ServeHTTP(recorder, req)
+		close(done)
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"role":"assistant"`) {
+		t.Fatalf("expected immediate assistant role prelude before upstream emits content, got %s", body)
+	}
+	if strings.Contains(body, `"content":"later"`) {
+		t.Fatalf("expected content to remain blocked until upstream resumes, got %s", body)
+	}
+
+	close(blockCh)
+	<-done
 }
 
 func TestChatCompletionsSplitsLargeSingleStreamChunk(t *testing.T) {

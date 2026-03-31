@@ -19,6 +19,12 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 			model:   publicID,
 			created: a.now().Unix(),
 		}
+		if shouldEmitImmediateRolePrelude(req.Model) {
+			if err := writer.WriteRole(); err != nil {
+				writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+				return
+			}
+		}
 		resp, err := a.StreamTextChat(req, func(event TextStreamEvent) error {
 			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
 				if strings.TrimSpace(event.ChatModel) != "" {
@@ -35,11 +41,15 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 			return nil
 		})
 		if err != nil {
-			if !writer.started && (isTextTimeoutError(err) || isRetryableTextTransportError(err) || errorTypeForError(err, "") == "upstream_timeout") {
-				w.Header().Set("X-Holo-Text-Stream-Mode", "synthetic-fallback")
+			if !writer.wroteContent && (isTextTimeoutError(err) || isRetryableTextTransportError(err) || errorTypeForError(err, "") == "upstream_timeout") {
+				if !writer.started {
+					w.Header().Set("X-Holo-Text-Stream-Mode", "synthetic-fallback")
+				}
 				resp, fallbackErr := a.CompleteTextChat(req)
 				if fallbackErr != nil {
-					writeOpenAIError(w, statusCodeForError(fallbackErr), fallbackErr.Error(), errorTypeForError(fallbackErr, "generation_error"))
+					if !writer.started {
+						writeOpenAIError(w, statusCodeForError(fallbackErr), fallbackErr.Error(), errorTypeForError(fallbackErr, "generation_error"))
+					}
 					return
 				}
 				if strings.TrimSpace(resp.ChatModel) != "" {
@@ -62,6 +72,10 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 				if err := writer.Finish(); err != nil && !writer.started {
 					writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 				}
+				return
+			}
+			if writer.started {
+				_ = writer.Finish()
 				return
 			}
 			if !writer.started {
@@ -208,6 +222,25 @@ func deriveChatTitle(input string) string {
 		return string(runes[:80])
 	}
 	return normalized
+}
+
+func shouldEmitImmediateRolePrelude(model string) bool {
+	model = strings.TrimSpace(resolveRawModelID(model))
+	if cfg, ok := lookupTextModel(model); ok && cfg.Internet {
+		return true
+	}
+	switch model {
+	case "gpt-5.1", "gpt-5.2", "gpt-5.4",
+		"gpt-5.1-high", "gpt-5.2-high", "gpt-5.4-high", "gpt-5.4-pro",
+		"o3", "o3-pro", "o4-mini-deep-research",
+		"qwen3-thinking-2507", "qwen3-max",
+		"gemini-pro", "gemini-3-pro", "gemini-3.1-pro",
+		"claude-3-opus", "claude-4.5-opus", "claude-4.6-opus",
+		"claude-3-sonnet-high", "claude-4.6-sonnet-high":
+		return true
+	default:
+		return false
+	}
 }
 
 type openAITextStreamWriter struct {

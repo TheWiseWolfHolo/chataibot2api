@@ -16,10 +16,10 @@ const (
 	chataibotAPIBaseURL       = "https://chataibot.pro/api"
 	upstreamFromWeb           = 1
 	textContextTimeout        = 5 * time.Second
-	textRequestTimeout        = 20 * time.Second
-	textThinkingTimeout       = 45 * time.Second
-	textStreamTimeout         = 6 * time.Second
-	textStreamThinkingTimeout = 10 * time.Second
+	textRequestTimeout        = 60 * time.Second
+	textThinkingTimeout       = 3 * time.Minute
+	textStreamTimeout         = 90 * time.Second
+	textStreamThinkingTimeout = 4 * time.Minute
 	textJobPollInterval       = 2 * time.Second
 	textJobPollAttempts       = 8
 )
