@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -52,7 +53,7 @@ func TestStreamTextMessageParsesReasoningContentFrames(t *testing.T) {
 	client.httpClient = testHTTPClient
 
 	var events []protocol.TextStreamEvent
-	resp, err := client.StreamTextMessage(protocol.TextMessageRequest{
+	resp, err := client.StreamTextMessage(context.Background(), protocol.TextMessageRequest{
 		Text:   "probe",
 		ChatID: 42,
 		Model:  "gpt-5.4",

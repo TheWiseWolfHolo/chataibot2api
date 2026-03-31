@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -93,10 +94,13 @@ func (c *APIClient) SendTextMessage(req protocol.TextMessageRequest, jwtToken st
 	return result, nil
 }
 
-func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken string, emit func(protocol.TextStreamEvent) error) (protocol.TextCompletionResult, error) {
+func (c *APIClient) StreamTextMessage(ctx context.Context, req protocol.TextMessageRequest, jwtToken string, emit func(protocol.TextStreamEvent) error) (protocol.TextCompletionResult, error) {
 	httpReq, err := c.newUpstreamJSONRequest(http.MethodPost, chataibotAPIBaseURL+"/message/streaming", buildTextMessagePayload(req), jwtToken)
 	if err != nil {
 		return protocol.TextCompletionResult{}, err
+	}
+	if ctx != nil {
+		httpReq = httpReq.WithContext(ctx)
 	}
 	httpReq.Header.Set("Accept", "text/event-stream")
 

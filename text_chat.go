@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,11 @@ import (
 )
 
 const syntheticStreamChunkGap = 24 * time.Millisecond
+
+var (
+	firstVisibleOutputTimeoutRegular = 8 * time.Second
+	firstVisibleOutputTimeoutSlow    = 12 * time.Second
+)
 
 func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletionRequest) {
 	publicID := publicModelID(req.Model)
@@ -25,76 +31,108 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 				return
 			}
 		}
-		resp, err := a.StreamTextChat(req, func(event TextStreamEvent) error {
-			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
-				if strings.TrimSpace(event.ChatModel) != "" {
-					writer.model = publicModelID(event.ChatModel)
+		streamCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		type streamCallResult struct {
+			resp TextCompletionResult
+			err  error
+		}
+
+		eventsCh := make(chan TextStreamEvent, 32)
+		resultCh := make(chan streamCallResult, 1)
+
+		go func() {
+			resp, err := a.StreamTextChat(streamCtx, req, func(event TextStreamEvent) error {
+				select {
+				case <-streamCtx.Done():
+					return streamCtx.Err()
+				case eventsCh <- event:
+					return nil
 				}
-				return writer.WriteRole()
-			}
-			if strings.EqualFold(strings.TrimSpace(event.Type), "reasoningContent") {
-				return writer.WriteReasoningDelta(event.ReasoningContent)
-			}
-			if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") {
-				return writer.WriteDelta(event.Delta)
-			}
-			return nil
-		})
-		if err != nil {
-			if !writer.wroteContent && (isTextTimeoutError(err) || isRetryableTextTransportError(err) || errorTypeForError(err, "") == "upstream_timeout") {
-				if !writer.started {
-					w.Header().Set("X-Holo-Text-Stream-Mode", "synthetic-fallback")
-				}
-				resp, fallbackErr := a.CompleteTextChat(req)
-				if fallbackErr != nil {
-					if !writer.started {
-						writeOpenAIError(w, statusCodeForError(fallbackErr), fallbackErr.Error(), errorTypeForError(fallbackErr, "generation_error"))
+			})
+			close(eventsCh)
+			resultCh <- streamCallResult{resp: resp, err: err}
+		}()
+
+		visibleTimer := time.NewTimer(firstVisibleOutputTimeoutForModel(req.Model))
+		defer visibleTimer.Stop()
+		visibleDeadlineActive := true
+		var pendingResult *streamCallResult
+
+		for {
+			select {
+			case event, ok := <-eventsCh:
+				if !ok {
+					eventsCh = nil
+					if pendingResult != nil {
+						finishTextStreamResult(w, writer, req, a, pendingResult.resp, pendingResult.err)
+						return
 					}
-					return
+					continue
 				}
-				if strings.TrimSpace(resp.ChatModel) != "" {
-					writer.model = publicModelID(resp.ChatModel)
-				}
-				if strings.TrimSpace(resp.ReasoningContent) != "" {
-					if err := writer.WriteReasoningDelta(resp.ReasoningContent); err != nil {
+				if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
+					if strings.TrimSpace(event.ChatModel) != "" {
+						writer.model = publicModelID(event.ChatModel)
+					}
+					if err := writer.WriteRole(); err != nil {
+						cancel()
 						if !writer.started {
 							writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 						}
 						return
 					}
 				}
-				if err := writer.WriteDelta(resp.Content); err != nil {
+				if strings.EqualFold(strings.TrimSpace(event.Type), "reasoningContent") {
+					if err := writer.WriteReasoningDelta(event.ReasoningContent); err != nil {
+						cancel()
+						if !writer.started {
+							writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+						}
+						return
+					}
+				}
+				if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") {
+					if err := writer.WriteDelta(event.Delta); err != nil {
+						cancel()
+						if !writer.started {
+							writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+						}
+						return
+					}
+				}
+				if visibleDeadlineActive && writer.hasVisibleOutput {
+					if !visibleTimer.Stop() {
+						select {
+						case <-visibleTimer.C:
+						default:
+						}
+					}
+					visibleDeadlineActive = false
+				}
+
+			case streamResult := <-resultCh:
+				pendingResult = &streamResult
+				resultCh = nil
+				if eventsCh == nil {
+					finishTextStreamResult(w, writer, req, a, streamResult.resp, streamResult.err)
+					return
+				}
+
+			case <-visibleTimer.C:
+				visibleDeadlineActive = false
+				if writer.hasVisibleOutput {
+					continue
+				}
+				cancel()
+				if err := writeSyntheticTextFallbackStream(w, writer, req, a); err != nil {
 					if !writer.started {
 						writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 					}
-					return
-				}
-				if err := writer.Finish(); err != nil && !writer.started {
-					writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
-				}
-				return
-			}
-			if writer.started {
-				_ = writer.Finish()
-				return
-			}
-			if !writer.started {
-				writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
-			}
-			return
-		}
-		if !writer.wroteContent && strings.TrimSpace(resp.Content) != "" {
-			if err := writer.WriteDelta(resp.Content); err != nil {
-				if !writer.started {
-					writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
 				}
 				return
 			}
 		}
-		if err := writer.Finish(); err != nil && !writer.started {
-			writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
-		}
-		return
 	}
 
 	resp, err := a.CompleteTextChat(req)
@@ -119,6 +157,69 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 			},
 		},
 	})
+}
+
+func finishTextStreamResult(w http.ResponseWriter, writer *openAITextStreamWriter, req chatCompletionRequest, app *App, resp TextCompletionResult, err error) {
+	if err != nil {
+		if !writer.hasVisibleOutput && (isTextTimeoutError(err) || isRetryableTextTransportError(err) || errorTypeForError(err, "") == "upstream_timeout") {
+			if fallbackErr := writeSyntheticTextFallbackStream(w, writer, req, app); fallbackErr != nil && !writer.started {
+				writeOpenAIError(w, statusCodeForError(fallbackErr), fallbackErr.Error(), errorTypeForError(fallbackErr, "generation_error"))
+			}
+			return
+		}
+		if writer.started {
+			_ = writer.Finish()
+			return
+		}
+		writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+		return
+	}
+
+	if !writer.hasVisibleOutput && strings.TrimSpace(resp.ReasoningContent) != "" {
+		if err := writer.WriteReasoningDelta(resp.ReasoningContent); err != nil {
+			if !writer.started {
+				writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+			}
+			return
+		}
+	}
+	if !writer.wroteContent && strings.TrimSpace(resp.Content) != "" {
+		if err := writer.WriteDelta(resp.Content); err != nil {
+			if !writer.started {
+				writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+			}
+			return
+		}
+	}
+	if err := writer.Finish(); err != nil && !writer.started {
+		writeOpenAIError(w, statusCodeForError(err), err.Error(), errorTypeForError(err, "generation_error"))
+	}
+}
+
+func writeSyntheticTextFallbackStream(w http.ResponseWriter, writer *openAITextStreamWriter, req chatCompletionRequest, app *App) error {
+	if writer == nil || app == nil {
+		return fmt.Errorf("text stream fallback dependencies are not configured")
+	}
+	if !writer.started {
+		w.Header().Set("X-Holo-Text-Stream-Mode", "synthetic-fallback")
+	}
+
+	resp, err := app.CompleteTextChat(req)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(resp.ChatModel) != "" {
+		writer.model = publicModelID(resp.ChatModel)
+	}
+	if strings.TrimSpace(resp.ReasoningContent) != "" {
+		if err := writer.WriteReasoningDelta(resp.ReasoningContent); err != nil {
+			return err
+		}
+	}
+	if err := writer.WriteDelta(resp.Content); err != nil {
+		return err
+	}
+	return writer.Finish()
 }
 
 func buildTextUpstreamRequest(req chatCompletionRequest) (UpstreamTextMessageRequest, string, int, error) {
@@ -243,13 +344,21 @@ func shouldEmitImmediateRolePrelude(model string) bool {
 	}
 }
 
+func firstVisibleOutputTimeoutForModel(model string) time.Duration {
+	if shouldEmitImmediateRolePrelude(model) {
+		return firstVisibleOutputTimeoutSlow
+	}
+	return firstVisibleOutputTimeoutRegular
+}
+
 type openAITextStreamWriter struct {
-	w            http.ResponseWriter
-	model        string
-	created      int64
-	started      bool
-	wroteRole    bool
-	wroteContent bool
+	w                http.ResponseWriter
+	model            string
+	created          int64
+	started          bool
+	wroteRole        bool
+	wroteContent     bool
+	hasVisibleOutput bool
 }
 
 func (s *openAITextStreamWriter) start() {
@@ -275,6 +384,7 @@ func (s *openAITextStreamWriter) WriteDelta(content string) error {
 		}
 	}
 	s.wroteContent = true
+	s.hasVisibleOutput = true
 
 	pieces := splitTextStreamDelta(content)
 	for index, piece := range pieces {
@@ -320,6 +430,7 @@ func (s *openAITextStreamWriter) WriteReasoningDelta(content string) error {
 			return err
 		}
 	}
+	s.hasVisibleOutput = true
 
 	pieces := splitTextStreamDelta(content)
 	for index, piece := range pieces {

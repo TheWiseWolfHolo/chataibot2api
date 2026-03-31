@@ -24,7 +24,7 @@ type ImageBackend interface {
 	MergeImage(prompt string, base64Images []string, mergeType, jwtToken string) (string, error)
 	CreateChatContext(model, title, jwtToken string) (int, error)
 	SendTextMessage(req UpstreamTextMessageRequest, jwtToken string) (TextCompletionResult, error)
-	StreamTextMessage(req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error)
+	StreamTextMessage(ctx context.Context, req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error)
 	GetCount(jwtToken string) (int, error)
 }
 
@@ -570,7 +570,7 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 	return TextCompletionResult{}, newTypedStatusError(http.StatusGatewayTimeout, "text generation timed out after retry", "upstream_timeout")
 }
 
-func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEvent) error) (TextCompletionResult, error) {
+func (a *App) StreamTextChat(ctx context.Context, req chatCompletionRequest, emit func(TextStreamEvent) error) (TextCompletionResult, error) {
 	if a.pool == nil || a.backend == nil {
 		return TextCompletionResult{}, fmt.Errorf("app dependencies are not configured")
 	}
@@ -611,7 +611,7 @@ func (a *App) StreamTextChat(req chatCompletionRequest, emit func(TextStreamEven
 		streamedAnyChunk := false
 		streamedAnyEvent := false
 		observedLatency := false
-		resp, err := a.backend.StreamTextMessage(messageReq, acc.JWT, func(event TextStreamEvent) error {
+		resp, err := a.backend.StreamTextMessage(ctx, messageReq, acc.JWT, func(event TextStreamEvent) error {
 			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
 				if mismatchErr := ensureModelMatch(req.Model, event.ChatModel); mismatchErr != nil {
 					return mismatchErr

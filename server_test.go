@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -217,16 +218,16 @@ type fakeBackend struct {
 	textCallCount   int
 	textErr         error
 
-	textStreamRequest     UpstreamTextMessageRequest
-	textStreamRequestJWT  string
-	textStreamRequestJWTs []string
-	textStreamEvents      []TextStreamEvent
-	textStreamResponse    TextCompletionResult
-	textStreamErrors      []error
+	textStreamRequest        UpstreamTextMessageRequest
+	textStreamRequestJWT     string
+	textStreamRequestJWTs    []string
+	textStreamEvents         []TextStreamEvent
+	textStreamResponse       TextCompletionResult
+	textStreamErrors         []error
 	textStreamTrailingErrors []error
-	textStreamBlockCh     chan struct{}
-	textStreamCallCount   int
-	textStreamErr         error
+	textStreamBlockCh        chan struct{}
+	textStreamCallCount      int
+	textStreamErr            error
 
 	quotaByJWT    map[string]int
 	getCountCalls []string
@@ -322,7 +323,7 @@ func (f *fakeBackend) SendTextMessage(req UpstreamTextMessageRequest, jwtToken s
 	return f.textResponse, nil
 }
 
-func (f *fakeBackend) StreamTextMessage(req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error) {
+func (f *fakeBackend) StreamTextMessage(ctx context.Context, req UpstreamTextMessageRequest, jwtToken string, emit func(TextStreamEvent) error) (TextCompletionResult, error) {
 	f.textStreamRequest = req
 	f.textStreamRequestJWT = jwtToken
 	f.textStreamRequestJWTs = append(f.textStreamRequestJWTs, jwtToken)
@@ -334,7 +335,11 @@ func (f *fakeBackend) StreamTextMessage(req UpstreamTextMessageRequest, jwtToken
 		return TextCompletionResult{}, f.textStreamErr
 	}
 	if f.textStreamBlockCh != nil {
-		<-f.textStreamBlockCh
+		select {
+		case <-f.textStreamBlockCh:
+		case <-ctx.Done():
+			return TextCompletionResult{}, ctx.Err()
+		}
 	}
 
 	events := append([]TextStreamEvent(nil), f.textStreamEvents...)
@@ -1454,6 +1459,72 @@ func TestChatCompletionsEmitsImmediateRolePreludeForSlowFirstTokenModels(t *test
 
 	close(blockCh)
 	<-done
+}
+
+func TestChatCompletionsFallsBackWhenSlowModelOnlyStreamsRolePrelude(t *testing.T) {
+	t.Helper()
+
+	previousSlowTimeout := firstVisibleOutputTimeoutSlow
+	firstVisibleOutputTimeoutSlow = 20 * time.Millisecond
+	defer func() {
+		firstVisibleOutputTimeoutSlow = previousSlowTimeout
+	}()
+
+	_, backend, handler := newTestHandler()
+	blockCh := make(chan struct{})
+	t.Cleanup(func() {
+		close(blockCh)
+	})
+	backend.textStreamBlockCh = blockCh
+	backend.textResponse = TextCompletionResult{
+		ChatModel:        "gpt-5.4",
+		ReasoningContent: "fallback thinking",
+		Content:          "fallback answer",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"stream":true,
+		"messages":[{"role":"user","content":"Solve carefully"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+
+	go func() {
+		handler.ServeHTTP(recorder, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected stalled role-only stream to terminate via fallback")
+	}
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, body)
+	}
+	if !strings.Contains(body, `"role":"assistant"`) {
+		t.Fatalf("expected assistant role prelude in stream body, got %s", body)
+	}
+	if !strings.Contains(body, `"reasoning_content":"fallback thinking"`) {
+		t.Fatalf("expected fallback reasoning content after stalled role-only stream, got %s", body)
+	}
+	if !strings.Contains(body, `"content":"fallback answer"`) {
+		t.Fatalf("expected fallback content after stalled role-only stream, got %s", body)
+	}
+	if !strings.Contains(body, `[DONE]`) {
+		t.Fatalf("expected stalled role-only stream to finish, got %s", body)
+	}
+	if backend.textStreamCallCount != 1 {
+		t.Fatalf("expected one streaming attempt, got %d", backend.textStreamCallCount)
+	}
+	if backend.textCallCount != 1 {
+		t.Fatalf("expected one non-stream fallback completion, got %d", backend.textCallCount)
+	}
 }
 
 func TestChatCompletionsSplitsLargeSingleStreamChunk(t *testing.T) {
