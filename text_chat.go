@@ -161,7 +161,7 @@ func (a *App) handleTextChatCompletions(w http.ResponseWriter, req chatCompletio
 
 func finishTextStreamResult(w http.ResponseWriter, writer *openAITextStreamWriter, req chatCompletionRequest, app *App, resp TextCompletionResult, err error) {
 	if err != nil {
-		if !writer.hasVisibleOutput && (isTextTimeoutError(err) || isRetryableTextTransportError(err) || errorTypeForError(err, "") == "upstream_timeout") {
+		if !writer.hasVisibleOutput {
 			if fallbackErr := writeSyntheticTextFallbackStream(w, writer, req, app); fallbackErr != nil && !writer.started {
 				writeOpenAIError(w, statusCodeForError(fallbackErr), fallbackErr.Error(), errorTypeForError(fallbackErr, "generation_error"))
 			}

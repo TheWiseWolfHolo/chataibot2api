@@ -1527,6 +1527,49 @@ func TestChatCompletionsFallsBackWhenSlowModelOnlyStreamsRolePrelude(t *testing.
 	}
 }
 
+func TestChatCompletionsFallsBackWhenSlowModelEndsWithoutVisibleOutput(t *testing.T) {
+	t.Helper()
+
+	_, backend, handler := newTestHandler()
+	backend.textStreamErr = newStatusError(http.StatusBadGateway, "upstream returned empty text completion")
+	backend.textResponse = TextCompletionResult{
+		ChatModel:        "gpt-4o-search-preview",
+		ReasoningContent: "fallback reasoning",
+		Content:          "fallback content",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4o-search-preview",
+		"stream":true,
+		"messages":[{"role":"user","content":"Say hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, body)
+	}
+	if !strings.Contains(body, `"role":"assistant"`) {
+		t.Fatalf("expected assistant role prelude in stream body, got %s", body)
+	}
+	if !strings.Contains(body, `"reasoning_content":"fallback reasoning"`) {
+		t.Fatalf("expected fallback reasoning after no-visible-output stream termination, got %s", body)
+	}
+	if !strings.Contains(body, `"content":"fallback content"`) {
+		t.Fatalf("expected fallback content after no-visible-output stream termination, got %s", body)
+	}
+	if !strings.Contains(body, `[DONE]`) {
+		t.Fatalf("expected completed stream after fallback, got %s", body)
+	}
+	if backend.textCallCount != 1 {
+		t.Fatalf("expected one non-stream fallback completion, got %d", backend.textCallCount)
+	}
+}
+
 func TestChatCompletionsSplitsLargeSingleStreamChunk(t *testing.T) {
 	t.Helper()
 
