@@ -94,3 +94,19 @@ func TestTextRequestTimeoutForModelGivesThinkingModelsMoreTime(t *testing.T) {
 		t.Fatalf("expected qwen thinking timeout to exceed regular timeout, got regular=%s qwen=%s", regular, qwenThinking)
 	}
 }
+
+func TestTextTimeoutsForInternetModelsExceedRegularModels(t *testing.T) {
+	t.Helper()
+
+	regularRequest := textRequestTimeoutForModel("gpt-4.1-nano")
+	internetRequest := textRequestTimeoutForModel("gpt-4o-search-preview")
+	regularStream := textStreamTimeoutForModel("gpt-4.1-nano")
+	internetStream := textStreamTimeoutForModel("gpt-4o-search-preview")
+
+	if internetRequest <= regularRequest {
+		t.Fatalf("expected internet text request timeout to exceed regular timeout, got regular=%s internet=%s", regularRequest, internetRequest)
+	}
+	if internetStream <= regularStream {
+		t.Fatalf("expected internet text stream timeout to exceed regular stream timeout, got regular=%s internet=%s", regularStream, internetStream)
+	}
+}

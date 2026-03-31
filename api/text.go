@@ -194,6 +194,9 @@ func (c *APIClient) StreamTextMessage(req protocol.TextMessageRequest, jwtToken 
 }
 
 func textRequestTimeoutForModel(model string) time.Duration {
+	if isInternetTextModel(model) {
+		return textThinkingTimeout
+	}
 	switch strings.TrimSpace(model) {
 	case "gpt-5.1", "gpt-5.2", "gpt-5.4",
 		"gpt-5.1-high", "gpt-5.2-high", "gpt-5.4-high", "gpt-5.4-pro",
@@ -209,6 +212,9 @@ func textRequestTimeoutForModel(model string) time.Duration {
 }
 
 func textStreamTimeoutForModel(model string) time.Duration {
+	if isInternetTextModel(model) {
+		return textStreamThinkingTimeout
+	}
 	switch strings.TrimSpace(model) {
 	case "gpt-5.1", "gpt-5.2", "gpt-5.4",
 		"gpt-5.1-high", "gpt-5.2-high", "gpt-5.4-high", "gpt-5.4-pro",
@@ -220,6 +226,18 @@ func textStreamTimeoutForModel(model string) time.Duration {
 		return textStreamThinkingTimeout
 	default:
 		return textStreamTimeout
+	}
+}
+
+func isInternetTextModel(model string) bool {
+	switch strings.TrimSpace(model) {
+	case "gpt-4o-search-preview",
+		"perplexity", "perplexity-pro",
+		"gemini-2-flash-search", "gemini-3-flash-search",
+		"o4-mini-deep-research":
+		return true
+	default:
+		return false
 	}
 }
 
