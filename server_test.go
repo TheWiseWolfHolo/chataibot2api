@@ -20,6 +20,8 @@ type fakePool struct {
 	acquiredTextModel   string
 	acquiredTextModels  []string
 	acquiredAccounts    []*Account
+	tryAcquireEmptyNil  bool
+	onStartFill         func(count int)
 	released            *Account
 	releasedAccounts    []*Account
 	cooldowns           []fakeCooldown
@@ -94,6 +96,9 @@ func (f *fakePool) TryAcquireImage(cost int, excludedJWTs map[string]struct{}) *
 		f.acquiredAccounts = append(f.acquiredAccounts, f.acquiredAccount)
 		return f.acquiredAccount
 	}
+	if f.tryAcquireEmptyNil {
+		return nil
+	}
 	acc := &Account{JWT: "fake-jwt", Quota: 65}
 	if len(excludedJWTs) > 0 {
 		if _, excluded := excludedJWTs[strings.TrimSpace(acc.JWT)]; excluded {
@@ -102,6 +107,22 @@ func (f *fakePool) TryAcquireImage(cost int, excludedJWTs map[string]struct{}) *
 	}
 	f.acquiredAccounts = append(f.acquiredAccounts, acc)
 	return acc
+}
+
+func (f *fakePool) TryAcquireText(model string, cost int) *Account {
+	f.acquiredTextModel = model
+	f.acquiredTextModels = append(f.acquiredTextModels, model)
+	if len(f.acquireQueue) > 0 {
+		return f.takeAccount(cost)
+	}
+	if f.acquiredAccount != nil {
+		return f.takeAccount(cost)
+	}
+	if f.tryAcquireEmptyNil {
+		f.acquiredCost = cost
+		return nil
+	}
+	return f.takeAccount(cost)
 }
 
 func (f *fakePool) takeAccount(cost int) *Account {
@@ -156,6 +177,9 @@ func (f *fakePool) Status() PoolStatus {
 
 func (f *fakePool) StartFillTask(count int) FillTaskSnapshot {
 	f.fillCounts = append(f.fillCounts, count)
+	if f.onStartFill != nil {
+		f.onStartFill(count)
+	}
 	task := f.fillTask
 	if task.ID == "" {
 		task = FillTaskSnapshot{
@@ -961,6 +985,90 @@ func TestImagesGenerationsFailsFastWhenTimedOutImageAccountHasNoFreshFallback(t 
 	}
 	if !strings.Contains(recorder.Body.String(), "no fresh image account available after retry") {
 		t.Fatalf("expected explicit no-fresh-account timeout response, got %s", recorder.Body.String())
+	}
+}
+
+func TestImagesGenerationsStartsFillTaskWhenNoEligibleAccountAvailable(t *testing.T) {
+	t.Helper()
+
+	previousWait := autoFillAcquireWait
+	previousPoll := autoFillAcquirePollInterval
+	autoFillAcquireWait = 20 * time.Millisecond
+	autoFillAcquirePollInterval = time.Millisecond
+	defer func() {
+		autoFillAcquireWait = previousWait
+		autoFillAcquirePollInterval = previousPoll
+	}()
+
+	pool, backend, handler := newTestHandler()
+	pool.tryAcquireEmptyNil = true
+	pool.onStartFill = func(count int) {
+		pool.tryAcquireEmptyNil = false
+		pool.acquireQueue = append(pool.acquireQueue, &Account{JWT: "jwt-filled-image", Quota: 65})
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"gemini-3.1-flash-image-preview",
+		"prompt":"draw a blue cat icon"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.fillCounts) != 1 || pool.fillCounts[0] != autoFillBatchSize {
+		t.Fatalf("expected single auto fill task for %d accounts, got %+v", autoFillBatchSize, pool.fillCounts)
+	}
+	if len(backend.generateJWTs) != 1 || backend.generateJWTs[0] != "jwt-filled-image" {
+		t.Fatalf("expected filled image account to be used, got %+v", backend.generateJWTs)
+	}
+}
+
+func TestChatCompletionsStartsFillTaskWhenNoEligibleTextAccountAvailable(t *testing.T) {
+	t.Helper()
+
+	previousWait := autoFillAcquireWait
+	previousPoll := autoFillAcquirePollInterval
+	autoFillAcquireWait = 20 * time.Millisecond
+	autoFillAcquirePollInterval = time.Millisecond
+	defer func() {
+		autoFillAcquireWait = previousWait
+		autoFillAcquirePollInterval = previousPoll
+	}()
+
+	pool, backend, handler := newTestHandler()
+	pool.tryAcquireEmptyNil = true
+	pool.onStartFill = func(count int) {
+		pool.tryAcquireEmptyNil = false
+		pool.acquireQueue = append(pool.acquireQueue, &Account{JWT: "jwt-filled-text", Quota: 65})
+	}
+	backend.textResponse = TextCompletionResult{
+		ChatModel: "gpt-4.1",
+		Content:   "hello from auto fill",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4.1",
+		"messages":[{"role":"user","content":"Say hello."}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.fillCounts) != 1 || pool.fillCounts[0] != autoFillBatchSize {
+		t.Fatalf("expected single auto fill task for %d accounts, got %+v", autoFillBatchSize, pool.fillCounts)
+	}
+	if len(backend.textRequestJWTs) != 1 || backend.textRequestJWTs[0] != "jwt-filled-text" {
+		t.Fatalf("expected filled text account to be used, got %+v", backend.textRequestJWTs)
 	}
 }
 

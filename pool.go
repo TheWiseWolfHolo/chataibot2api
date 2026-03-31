@@ -364,6 +364,15 @@ func (p *SimplePool) TryAcquireImage(cost int, excludedJWTs map[string]struct{})
 	})
 }
 
+func (p *SimplePool) TryAcquireText(model string, cost int) *Account {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.takeLocked(func() (*Account, bool) {
+		return p.takeBestCandidateLockedWithExclusions(cost, model, true, nil)
+	})
+}
+
 func (p *SimplePool) takeLocked(pick func() (*Account, bool)) *Account {
 	acc, fromReusable := pick()
 	if acc == nil {

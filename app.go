@@ -55,6 +55,10 @@ type imageRetryPool interface {
 	TryAcquireImage(cost int, excludedJWTs map[string]struct{}) *Account
 }
 
+type textTryRoutingPool interface {
+	TryAcquireText(model string, cost int) *Account
+}
+
 type App struct {
 	pool             PoolManager
 	backend          ImageBackend
@@ -71,8 +75,14 @@ const (
 	textRetryCooldown        = 90 * time.Second
 	imageRetryAttempts       = 2
 	imageRetryCooldown       = 90 * time.Second
+	autoFillBatchSize        = 30
 	maxTextContinuationTurns = 2
 	minTruncationContentSize = 1200
+)
+
+var (
+	autoFillAcquireWait         = 45 * time.Second
+	autoFillAcquirePollInterval = 500 * time.Millisecond
 )
 
 var abruptTextEndingPattern = regexp.MustCompile(`[=\(\[\{,\.:+\-/*_'"<>]$`)
@@ -477,7 +487,7 @@ func (a *App) executeImageOperationWithRetry(requiredCost int, ratio string, run
 				}
 				return "", newTypedStatusError(http.StatusGatewayTimeout, fmt.Sprintf("Generation failed: no fresh image account available after retry (%v)", lastErr), "upstream_timeout")
 			}
-			return "", newStatusError(http.StatusInternalServerError, "image pool returned no account")
+			return "", newTypedStatusError(http.StatusServiceUnavailable, "no eligible image account available after auto-fill wait", "account_unavailable")
 		}
 		if jwt := strings.TrimSpace(acc.JWT); jwt != "" {
 			triedJWTs[jwt] = struct{}{}
@@ -572,6 +582,9 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 
 	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
 		acc := a.acquireTextAccount(req.Model, requiredCost)
+		if acc == nil {
+			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, "no eligible text account available after auto-fill wait", "account_unavailable")
+		}
 		attemptStartedAt := time.Now()
 
 		chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
@@ -643,6 +656,9 @@ func (a *App) StreamTextChat(ctx context.Context, req chatCompletionRequest, emi
 
 	for attempt := 1; attempt <= textStreamRetryAttempts; attempt++ {
 		acc := a.acquireTextAccount(req.Model, requiredCost)
+		if acc == nil {
+			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, "no eligible text account available after auto-fill wait", "account_unavailable")
+		}
 		attemptStartedAt := time.Now()
 
 		chatID, err := a.backend.CreateChatContext(req.Model, title, acc.JWT)
@@ -1195,6 +1211,14 @@ func (a *App) acquireTextAccount(model string, cost int) *Account {
 	if a == nil || a.pool == nil {
 		return nil
 	}
+	if tryPool, ok := a.pool.(textTryRoutingPool); ok {
+		if acc := tryPool.TryAcquireText(model, cost); acc != nil {
+			return acc
+		}
+		return a.acquireAccountAfterAutoFill(func() *Account {
+			return tryPool.TryAcquireText(model, cost)
+		})
+	}
 	if routingPool, ok := a.pool.(textRoutingPool); ok {
 		return routingPool.AcquireText(model, cost)
 	}
@@ -1205,12 +1229,58 @@ func (a *App) acquireImageAccount(cost int, attempt int, excludedJWTs map[string
 	if a == nil || a.pool == nil {
 		return nil
 	}
-	if attempt > 1 {
-		if retryPool, ok := a.pool.(imageRetryPool); ok {
-			return retryPool.TryAcquireImage(cost, excludedJWTs)
+	if retryPool, ok := a.pool.(imageRetryPool); ok {
+		if attempt > 1 {
+			if acc := retryPool.TryAcquireImage(cost, excludedJWTs); acc != nil {
+				return acc
+			}
+			return a.acquireAccountAfterAutoFill(func() *Account {
+				return retryPool.TryAcquireImage(cost, excludedJWTs)
+			})
 		}
+		if acc := retryPool.TryAcquireImage(cost, nil); acc != nil {
+			return acc
+		}
+		return a.acquireAccountAfterAutoFill(func() *Account {
+			return retryPool.TryAcquireImage(cost, nil)
+		})
 	}
 	return a.pool.Acquire(cost)
+}
+
+func (a *App) acquireAccountAfterAutoFill(acquire func() *Account) *Account {
+	if a == nil || a.pool == nil || acquire == nil {
+		return nil
+	}
+	if acc := acquire(); acc != nil {
+		return acc
+	}
+
+	a.ensureFillTaskRunning(autoFillBatchSize)
+
+	deadline := time.Now().Add(autoFillAcquireWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(autoFillAcquirePollInterval)
+		if acc := acquire(); acc != nil {
+			return acc
+		}
+	}
+
+	return nil
+}
+
+func (a *App) ensureFillTaskRunning(count int) {
+	if a == nil || a.pool == nil || count < 1 {
+		return
+	}
+	status := a.pool.Status()
+	for _, task := range status.Tasks {
+		current := strings.TrimSpace(task.Status)
+		if current == "running" || current == "stopping" {
+			return
+		}
+	}
+	a.pool.StartFillTask(count)
 }
 
 func (a *App) markTextModelUnsupported(jwtToken string, model string) {

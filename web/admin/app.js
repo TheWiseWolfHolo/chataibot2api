@@ -38,7 +38,8 @@ const state = {
     status: 'all',
     bucket: 'all',
     query: '',
-    sort: 'status-asc-quota-asc',
+    sortKey: 'status',
+    sortDirection: 'asc',
   },
   pagination: {
     page: 1,
@@ -49,6 +50,7 @@ const state = {
   logs: [],
   refreshing: false,
   probing: false,
+  probeAbortController: null,
   filling: false,
   stoppingFill: false,
   bannerError: '',
@@ -255,6 +257,54 @@ function allRows() {
   return (state.snapshot?.rows || []).map((row) => effectiveRow(row));
 }
 
+function compareByDirection(left, right, direction = 'asc') {
+  const normalizedDirection = direction === 'desc' ? 'desc' : 'asc';
+  if (left === right) {
+    return 0;
+  }
+  if (normalizedDirection === 'desc') {
+    return left < right ? 1 : -1;
+  }
+  return left < right ? -1 : 1;
+}
+
+function compareDateValues(left, right, direction = 'asc') {
+  const leftValue = left ? new Date(left).getTime() : 0;
+  const rightValue = right ? new Date(right).getTime() : 0;
+  return compareByDirection(leftValue, rightValue, direction);
+}
+
+function compareTextValues(left, right, direction = 'asc') {
+  const normalizedLeft = String(left || '');
+  const normalizedRight = String(right || '');
+  if (normalizedLeft === normalizedRight) {
+    return 0;
+  }
+  if (direction === 'desc') {
+    return normalizedRight.localeCompare(normalizedLeft);
+  }
+  return normalizedLeft.localeCompare(normalizedRight);
+}
+
+function sortArrow(key) {
+  if (state.filters.sortKey !== key) {
+    return '↕';
+  }
+  return state.filters.sortDirection === 'desc' ? '↓' : '↑';
+}
+
+function toggleSort(key) {
+  if (state.filters.sortKey === key) {
+    state.filters.sortDirection = state.filters.sortDirection === 'desc' ? 'asc' : 'desc';
+  } else {
+    state.filters.sortKey = key;
+    state.filters.sortDirection = key === 'quota' || key === 'updated' ? 'desc' : 'asc';
+  }
+  state.pagination.page = 1;
+  renderQuotaTable();
+}
+window.toggleSort = toggleSort;
+
 function getFilteredRows() {
   const query = state.filters.query.trim().toLowerCase();
   const rows = allRows().filter((row) => {
@@ -271,29 +321,28 @@ function getFilteredRows() {
   });
 
   const sorted = [...rows];
-  switch (state.filters.sort) {
-    case 'quota-desc':
-      sorted.sort((a, b) => (b.quota - a.quota) || a.jwt.localeCompare(b.jwt));
+  switch (state.filters.sortKey) {
+    case 'quota':
+      sorted.sort((a, b) =>
+        compareByDirection(a.quota, b.quota, state.filters.sortDirection) ||
+        compareDateValues(a.last_checked_at, b.last_checked_at, 'desc') ||
+        compareTextValues(a.jwt, b.jwt, 'asc')
+      );
       break;
-    case 'updated-desc':
+    case 'updated':
       sorted.sort((a, b) => {
-        const left = a.last_checked_at ? new Date(a.last_checked_at).getTime() : 0;
-        const right = b.last_checked_at ? new Date(b.last_checked_at).getTime() : 0;
-        return (right - left) || (a.quota - b.quota) || a.jwt.localeCompare(b.jwt);
+        return compareDateValues(a.last_checked_at, b.last_checked_at, state.filters.sortDirection) ||
+          compareByDirection(a.quota, b.quota, 'desc') ||
+          compareTextValues(a.jwt, b.jwt, 'asc');
       });
       break;
-    case 'status-asc-quota-asc':
     default:
       sorted.sort((a, b) => {
         const left = STATUS_ORDER[a.status] ?? 99;
         const right = STATUS_ORDER[b.status] ?? 99;
-        if (left !== right) {
-          return left - right;
-        }
-        if (a.quota !== b.quota) {
-          return a.quota - b.quota;
-        }
-        return a.jwt.localeCompare(b.jwt);
+        return compareByDirection(left, right, state.filters.sortDirection) ||
+          compareByDirection(a.quota, b.quota, state.filters.sortDirection) ||
+          compareTextValues(a.jwt, b.jwt, 'asc');
       });
       break;
   }
@@ -355,6 +404,7 @@ function renderQuotaTableTools() {
   const { page, totalPages, pagedRows } = getPaginationState(rows);
   const pageProbeDisabled = state.probing || pagedRows.length === 0 ? 'disabled' : '';
   const customProbeDisabled = state.probing || rows.length === 0 ? 'disabled' : '';
+  const stopProbeDisabled = state.probing ? '' : 'disabled';
   const activeFillTask = currentFillTask();
   const hasActiveFillTask = Boolean(activeFillTask);
   const fillDisabled = state.filling ? 'disabled' : '';
@@ -390,14 +440,6 @@ function renderQuotaTableTools() {
         <span>搜索 JWT</span>
         <input id="queryInput" type="search" placeholder="输入 token 片段" value="${escapeHtml(state.filters.query)}" />
       </label>
-      <label class="field" style="min-width: 180px;">
-        <span>排序</span>
-        <select id="sortSelect">
-          <option value="status-asc-quota-asc">按状态再按额度</option>
-          <option value="quota-desc">额度从高到低</option>
-          <option value="updated-desc">按最近更新时间</option>
-        </select>
-      </label>
       <label class="field" style="min-width: 140px;">
         <span>每页</span>
         <select id="pageSizeSelect">
@@ -419,17 +461,18 @@ function renderQuotaTableTools() {
         <input id="probeLimitInput" type="number" min="1" step="1" max="${Math.max(rows.length, 1)}" value="${escapeHtml(String(probeLimit))}" />
       </label>
       <button type="button" class="button secondary" id="probeLimitBtn" ${customProbeDisabled}>${state.probing ? '核验中' : `核验前 ${probeLimit} 条`}</button>
+      <button type="button" class="button danger" id="stopProbeBtn" ${stopProbeDisabled}>${state.probing ? '停止核验' : '停止核验'}</button>
     </div>
     <div class="strip">
       ${pill(`当前筛选 ${rows.length} 条`)}
       ${pill(`当前页 ${page} / ${totalPages}`)}
+      ${pill(`排序 ${state.filters.sortKey} ${state.filters.sortDirection === 'desc' ? '↓' : '↑'}`)}
       ${fillTaskPill}
     </div>
   `;
 
   document.getElementById('statusFilter').value = state.filters.status;
   document.getElementById('bucketFilter').value = state.filters.bucket;
-  document.getElementById('sortSelect').value = state.filters.sort;
   document.getElementById('pageSizeSelect').value = String(state.pagination.pageSize);
 
   document.getElementById('statusFilter')?.addEventListener('change', (event) => {
@@ -444,11 +487,6 @@ function renderQuotaTableTools() {
   });
   document.getElementById('queryInput')?.addEventListener('input', (event) => {
     state.filters.query = event.target.value;
-    state.pagination.page = 1;
-    renderQuotaTable();
-  });
-  document.getElementById('sortSelect')?.addEventListener('change', (event) => {
-    state.filters.sort = event.target.value;
     state.pagination.page = 1;
     renderQuotaTable();
   });
@@ -467,6 +505,7 @@ function renderQuotaTableTools() {
   document.getElementById('stopFillBtn')?.addEventListener('click', runStopFill);
   document.getElementById('probePageBtn')?.addEventListener('click', runProbeCurrentPage);
   document.getElementById('probeLimitBtn')?.addEventListener('click', runProbeCustomLimit);
+  document.getElementById('stopProbeBtn')?.addEventListener('click', runStopProbe);
 }
 
 function renderQuotaTable() {
@@ -488,11 +527,11 @@ function renderQuotaTable() {
       <table class="model-table quota-table">
         <thead>
           <tr>
-            <th>额度</th>
-            <th>状态</th>
+            <th><button type="button" class="button ghost" id="sortQuotaBtn">额度 ${sortArrow('quota')}</button></th>
+            <th><button type="button" class="button ghost" id="sortStatusBtn">状态 ${sortArrow('status')}</button></th>
             <th>JWT</th>
             <th>池位</th>
-            <th>最近更新时间</th>
+            <th><button type="button" class="button ghost" id="sortUpdatedBtn">最近更新时间 ${sortArrow('updated')}</button></th>
             <th>操作</th>
           </tr>
         </thead>
@@ -542,11 +581,19 @@ function renderQuotaTable() {
       </div>
       <div class="action-row" style="gap: 10px;">
         <button type="button" class="button ghost" id="prevPageBtn" ${state.pagination.page <= 1 ? 'disabled' : ''}>上一页</button>
+        <label class="field" style="min-width: 120px;">
+          <span>跳到第几页</span>
+          <input id="pageJumpInput" type="number" min="1" step="1" max="${totalPages}" value="${page}" />
+        </label>
+        <button type="button" class="button ghost" id="jumpPageBtn">跳转</button>
         <button type="button" class="button ghost" id="nextPageBtn" ${state.pagination.page >= totalPages ? 'disabled' : ''}>下一页</button>
       </div>
     </div>
   `;
 
+  document.getElementById('sortQuotaBtn')?.addEventListener('click', () => toggleSort('quota'));
+  document.getElementById('sortStatusBtn')?.addEventListener('click', () => toggleSort('status'));
+  document.getElementById('sortUpdatedBtn')?.addEventListener('click', () => toggleSort('updated'));
   document.getElementById('prevPageBtn')?.addEventListener('click', () => {
     if (state.pagination.page <= 1) {
       return;
@@ -560,6 +607,19 @@ function renderQuotaTable() {
     }
     state.pagination.page += 1;
     renderQuotaTable();
+  });
+  const jumpToPage = () => {
+    const input = document.getElementById('pageJumpInput');
+    const targetPage = Math.min(Math.max(toPositiveInt(input?.value, page), 1), totalPages);
+    state.pagination.page = targetPage;
+    renderQuotaTable();
+  };
+  document.getElementById('jumpPageBtn')?.addEventListener('click', jumpToPage);
+  document.getElementById('pageJumpInput')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      jumpToPage();
+    }
   });
 }
 
@@ -578,15 +638,21 @@ async function runProbeForJWTs(jwts, successLabel) {
   }
 
   state.probing = true;
+  state.probeAbortController = new AbortController();
   renderQuotaTable();
   try {
     const payload = await fetchJSON('/v1/admin/quota/probe', {
       method: 'POST',
       body: JSON.stringify({ jwts }),
+      signal: state.probeAbortController.signal,
     });
     applyProbePayload(payload);
     pushLog(`${successLabel}：${jwts.length} 条`);
   } catch (error) {
+    if (error?.name === 'AbortError') {
+      pushLog('额度核验已停止');
+      return;
+    }
     if (error.status === 401) {
       window.location.replace('/admin/login');
       return;
@@ -594,6 +660,7 @@ async function runProbeForJWTs(jwts, successLabel) {
     pushLog(`额度核验失败：${error.message}`, true);
   } finally {
     state.probing = false;
+    state.probeAbortController = null;
     renderQuotaTable();
   }
 }
@@ -614,6 +681,13 @@ async function runProbeSingle(jwt) {
   await runProbeForJWTs([jwt], '单个核验完成');
 }
 window.runProbeSingle = runProbeSingle;
+
+function runStopProbe() {
+  if (!state.probing || !state.probeAbortController) {
+    return;
+  }
+  state.probeAbortController.abort();
+}
 
 async function runFill() {
   if (state.filling) {
