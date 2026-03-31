@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -147,7 +149,14 @@ const (
 	lowQuotaThreshold          = 10
 	textSlowThreshold          = 8 * time.Second
 	textTimeoutIsolationWindow = 5 * time.Minute
+	defaultFreshQuota          = 65
+	staleDefaultQuota          = 15
+	freshQuotaGracePeriod      = 24 * time.Hour
 )
+
+type jwtQuotaClaims struct {
+	IssuedAt int64 `json:"iat"`
+}
 
 type quotaLane int
 
@@ -401,7 +410,11 @@ func (p *SimplePool) takeBestCandidateLockedWithExclusions(cost int, model strin
 	var best *candidate
 	now := time.Now().UTC()
 	consider := func(acc *Account, fromReusable bool) {
-		if acc == nil || acc.Quota < cost {
+		if acc == nil {
+			return
+		}
+		acc.Quota = normalizeCachedQuota(acc.JWT, acc.Quota, now)
+		if acc.Quota < cost {
 			return
 		}
 		if len(excludedJWTs) > 0 {
@@ -674,6 +687,7 @@ func (p *SimplePool) Release(acc *Account) {
 			retire = shouldRetireAccount(quota, nil)
 		}
 	}
+	acc.Quota = normalizeCachedQuota(acc.JWT, acc.Quota, time.Now().UTC())
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -705,6 +719,54 @@ func shouldRetireAccount(quota int, err error) bool {
 		return upstreamErr.StatusCode == http.StatusUnauthorized
 	}
 	return false
+}
+
+func normalizeCachedQuota(jwt string, quota int, now time.Time) int {
+	if quota != defaultFreshQuota {
+		return quota
+	}
+
+	issuedAt, ok := jwtIssuedAt(jwt)
+	if !ok {
+		return quota
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.UTC()
+	if issuedAt.After(now) {
+		return quota
+	}
+	if now.Sub(issuedAt) < freshQuotaGracePeriod {
+		return quota
+	}
+	return staleDefaultQuota
+}
+
+func jwtIssuedAt(jwt string) (time.Time, bool) {
+	jwt = strings.TrimSpace(jwt)
+	parts := strings.Split(jwt, ".")
+	if len(parts) < 2 {
+		return time.Time{}, false
+	}
+	payloadPart := strings.TrimSpace(parts[1])
+	if payloadPart == "" {
+		return time.Time{}, false
+	}
+
+	raw, err := base64.RawURLEncoding.DecodeString(payloadPart)
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	var claims jwtQuotaClaims
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return time.Time{}, false
+	}
+	if claims.IssuedAt <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(claims.IssuedAt, 0).UTC(), true
 }
 
 func (p *SimplePool) Cooldown(acc *Account, delay time.Duration) {
@@ -999,7 +1061,7 @@ func (p *SimplePool) ImportAccounts(accounts []*Account) ImportPoolResult {
 		}
 		imported := &Account{
 			JWT:   jwt,
-			Quota: acc.Quota,
+			Quota: normalizeCachedQuota(jwt, acc.Quota, time.Now().UTC()),
 		}
 		p.ready = append(p.ready, imported)
 		existing[jwt] = struct{}{}
@@ -1050,7 +1112,7 @@ func (p *SimplePool) RestoreAccounts(accounts []*Account) (RestorePoolResult, er
 		}
 		restored = append(restored, &Account{
 			JWT:   jwt,
-			Quota: acc.Quota,
+			Quota: normalizeCachedQuota(jwt, acc.Quota, time.Now().UTC()),
 		})
 	}
 
@@ -1328,6 +1390,7 @@ func (p *SimplePool) restoreFromStore() {
 
 	loaded := 0
 	rejected := 0
+	normalized := false
 	seen := make(map[string]struct{}, len(accounts))
 	for _, acc := range accounts {
 		if acc == nil {
@@ -1349,9 +1412,13 @@ func (p *SimplePool) restoreFromStore() {
 			rejected++
 			continue
 		}
+		quota := normalizeCachedQuota(jwt, acc.Quota, time.Now().UTC())
+		if quota != acc.Quota {
+			normalized = true
+		}
 		p.ready = append(p.ready, &Account{
 			JWT:   jwt,
-			Quota: acc.Quota,
+			Quota: quota,
 		})
 		loaded++
 	}
@@ -1361,6 +1428,9 @@ func (p *SimplePool) restoreFromStore() {
 	p.persistedCount = loaded
 	p.lastPersistError = ""
 	p.reconcileAutoFillLocked()
+	if normalized {
+		p.persistLocked()
+	}
 }
 
 func (p *SimplePool) persistLocked() {
@@ -1388,6 +1458,7 @@ func (p *SimplePool) snapshotAccountsLocked() []*Account {
 	result := make([]*Account, 0, len(visiblePooled)+len(p.borrowed))
 	seen := make(map[string]struct{}, len(result))
 	appendAccount := func(jwt string, quota int) {
+		quota = normalizeCachedQuota(jwt, quota, time.Now().UTC())
 		jwt = strings.TrimSpace(jwt)
 		if jwt == "" || quota <= 0 {
 			return

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -51,6 +53,29 @@ func cloneAccounts(accounts []*Account) []*Account {
 		cloned = append(cloned, &copyValue)
 	}
 	return cloned
+}
+
+func testJWTWithIssuedAt(t *testing.T, issuedAt time.Time) string {
+	t.Helper()
+
+	headerRaw, err := json.Marshal(map[string]any{
+		"alg": "HS256",
+		"typ": "JWT",
+	})
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	payloadRaw, err := json.Marshal(map[string]any{
+		"id":  123456,
+		"iat": issuedAt.UTC().Unix(),
+		"exp": issuedAt.UTC().Add(90 * 24 * time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	return base64.RawURLEncoding.EncodeToString(headerRaw) + "." +
+		base64.RawURLEncoding.EncodeToString(payloadRaw) + ".signature"
 }
 
 func (f *fakePool) AdminQuotaRows() []AdminQuotaRow {
@@ -118,6 +143,69 @@ func TestSimplePoolTryAcquireImageSkipsExcludedJWTs(t *testing.T) {
 	}
 	if len(pool.ready) != 1 || pool.ready[0].JWT != "jwt-excluded" {
 		t.Fatalf("expected excluded account to remain ready, got %+v", pool.ready)
+	}
+}
+
+func TestNormalizeCachedQuotaDowngradesOlderDefaultQuota(t *testing.T) {
+	t.Helper()
+
+	oldJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-48*time.Hour))
+	freshJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-2*time.Hour))
+
+	if got := normalizeCachedQuota(oldJWT, 65, time.Now().UTC()); got != 15 {
+		t.Fatalf("expected older cached 65 quota to downgrade to 15, got %d", got)
+	}
+	if got := normalizeCachedQuota(freshJWT, 65, time.Now().UTC()); got != 65 {
+		t.Fatalf("expected fresh cached 65 quota to remain 65, got %d", got)
+	}
+	if got := normalizeCachedQuota(oldJWT, 29, time.Now().UTC()); got != 29 {
+		t.Fatalf("expected non-default quota to remain unchanged, got %d", got)
+	}
+}
+
+func TestSimplePoolRestoreFromStoreDowngradesOlderCached65Quota(t *testing.T) {
+	t.Helper()
+
+	store := &memoryAccountStore{
+		accounts: []*Account{
+			{JWT: testJWTWithIssuedAt(t, time.Now().UTC().Add(-48*time.Hour)), Quota: 65},
+			{JWT: testJWTWithIssuedAt(t, time.Now().UTC().Add(-2*time.Hour)), Quota: 65},
+		},
+	}
+
+	pool := NewSimplePoolWithOptions(10, 0, nil, nil, PoolOptions{Store: store})
+
+	if len(pool.ready) != 2 {
+		t.Fatalf("expected 2 restored accounts, got %d", len(pool.ready))
+	}
+	if pool.ready[0].Quota != 15 {
+		t.Fatalf("expected older restored account quota to downgrade to 15, got %d", pool.ready[0].Quota)
+	}
+	if pool.ready[1].Quota != 65 {
+		t.Fatalf("expected fresh restored account quota to remain 65, got %d", pool.ready[1].Quota)
+	}
+}
+
+func TestSimplePoolTakeBestAccountTreatsOlderCached65As15(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, nil, nil)
+	oldJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-48*time.Hour))
+	freshJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-2*time.Hour))
+	pool.ready = []*Account{
+		{JWT: oldJWT, Quota: 65},
+		{JWT: freshJWT, Quota: 65},
+	}
+
+	pool.mu.Lock()
+	acc, _ := pool.takeBestAccountLocked(30)
+	pool.mu.Unlock()
+
+	if acc == nil {
+		t.Fatalf("expected a candidate for cost 30")
+	}
+	if acc.JWT != freshJWT {
+		t.Fatalf("expected fresh account to be selected for cost 30, got %+v", acc)
 	}
 }
 
