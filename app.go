@@ -51,6 +51,10 @@ type textRoutingPool interface {
 	ClearTextModelUnsupported(jwt string, model string)
 }
 
+type imageRetryPool interface {
+	TryAcquireImage(cost int, excludedJWTs map[string]struct{}) *Account
+}
+
 type App struct {
 	pool             PoolManager
 	backend          ImageBackend
@@ -463,10 +467,20 @@ func (a *App) executeImageOperationWithRetry(requiredCost int, ratio string, run
 	}
 
 	var lastErr error
+	triedJWTs := make(map[string]struct{})
 	for attempt := 1; attempt <= imageRetryAttempts; attempt++ {
-		acc := a.pool.Acquire(requiredCost)
+		acc := a.acquireImageAccount(requiredCost, attempt, triedJWTs)
 		if acc == nil {
+			if lastErr != nil {
+				if statusCodeForError(lastErr) != http.StatusInternalServerError {
+					return "", lastErr
+				}
+				return "", newTypedStatusError(http.StatusGatewayTimeout, fmt.Sprintf("Generation failed: no fresh image account available after retry (%v)", lastErr), "upstream_timeout")
+			}
 			return "", newStatusError(http.StatusInternalServerError, "image pool returned no account")
+		}
+		if jwt := strings.TrimSpace(acc.JWT); jwt != "" {
+			triedJWTs[jwt] = struct{}{}
 		}
 
 		if !a.backend.UpdateUserSettings(acc.JWT, ratio) {
@@ -1183,6 +1197,18 @@ func (a *App) acquireTextAccount(model string, cost int) *Account {
 	}
 	if routingPool, ok := a.pool.(textRoutingPool); ok {
 		return routingPool.AcquireText(model, cost)
+	}
+	return a.pool.Acquire(cost)
+}
+
+func (a *App) acquireImageAccount(cost int, attempt int, excludedJWTs map[string]struct{}) *Account {
+	if a == nil || a.pool == nil {
+		return nil
+	}
+	if attempt > 1 {
+		if retryPool, ok := a.pool.(imageRetryPool); ok {
+			return retryPool.TryAcquireImage(cost, excludedJWTs)
+		}
 	}
 	return a.pool.Acquire(cost)
 }

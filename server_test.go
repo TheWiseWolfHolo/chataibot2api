@@ -70,6 +70,40 @@ func (f *fakePool) AcquireText(model string, cost int) *Account {
 	return f.takeAccount(cost)
 }
 
+func (f *fakePool) TryAcquireImage(cost int, excludedJWTs map[string]struct{}) *Account {
+	f.acquiredCost = cost
+	for i, acc := range f.acquireQueue {
+		if acc == nil {
+			continue
+		}
+		if len(excludedJWTs) > 0 {
+			if _, excluded := excludedJWTs[strings.TrimSpace(acc.JWT)]; excluded {
+				continue
+			}
+		}
+		f.acquireQueue = append(f.acquireQueue[:i], f.acquireQueue[i+1:]...)
+		f.acquiredAccounts = append(f.acquiredAccounts, acc)
+		return acc
+	}
+	if f.acquiredAccount != nil {
+		if len(excludedJWTs) > 0 {
+			if _, excluded := excludedJWTs[strings.TrimSpace(f.acquiredAccount.JWT)]; excluded {
+				return nil
+			}
+		}
+		f.acquiredAccounts = append(f.acquiredAccounts, f.acquiredAccount)
+		return f.acquiredAccount
+	}
+	acc := &Account{JWT: "fake-jwt", Quota: 65}
+	if len(excludedJWTs) > 0 {
+		if _, excluded := excludedJWTs[strings.TrimSpace(acc.JWT)]; excluded {
+			return nil
+		}
+	}
+	f.acquiredAccounts = append(f.acquiredAccounts, acc)
+	return acc
+}
+
 func (f *fakePool) takeAccount(cost int) *Account {
 	f.acquiredCost = cost
 	if len(f.acquireQueue) > 0 {
@@ -896,6 +930,37 @@ func TestImagesGenerationsRetriesAccountLimitedErrorWithFreshAccount(t *testing.
 	}
 	if !strings.Contains(recorder.Body.String(), "https://img.example.com/generated.png") {
 		t.Fatalf("expected successful retried image response, got %s", recorder.Body.String())
+	}
+}
+
+func TestImagesGenerationsFailsFastWhenTimedOutImageAccountHasNoFreshFallback(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	pool.acquiredAccount = &Account{JWT: "jwt-only-image-account", Quota: 65}
+	backend.generateErrs = []error{fakeTimeoutError{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"grok-imagine-1.0",
+		"prompt":"draw a blue cat icon"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusGatewayTimeout {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusGatewayTimeout, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.cooldowns) != 1 || pool.cooldowns[0].Account == nil || pool.cooldowns[0].Account.JWT != "jwt-only-image-account" {
+		t.Fatalf("expected timed-out image account to be cooled down once, got %+v", pool.cooldowns)
+	}
+	if len(backend.generateJWTs) != 1 || backend.generateJWTs[0] != "jwt-only-image-account" {
+		t.Fatalf("expected image generation to stop after first timed-out account when no fresh fallback exists, got %+v", backend.generateJWTs)
+	}
+	if !strings.Contains(recorder.Body.String(), "no fresh image account available after retry") {
+		t.Fatalf("expected explicit no-fresh-account timeout response, got %s", recorder.Body.String())
 	}
 }
 

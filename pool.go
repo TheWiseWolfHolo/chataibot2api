@@ -346,6 +346,15 @@ func (p *SimplePool) AcquireText(model string, cost int) *Account {
 	}
 }
 
+func (p *SimplePool) TryAcquireImage(cost int, excludedJWTs map[string]struct{}) *Account {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.takeLocked(func() (*Account, bool) {
+		return p.takeBestCandidateLockedWithExclusions(cost, "", false, excludedJWTs)
+	})
+}
+
 func (p *SimplePool) takeLocked(pick func() (*Account, bool)) *Account {
 	acc, fromReusable := pick()
 	if acc == nil {
@@ -371,14 +380,18 @@ func (p *SimplePool) takeLocked(pick func() (*Account, bool)) *Account {
 }
 
 func (p *SimplePool) takeBestAccountLocked(cost int) (*Account, bool) {
-	return p.takeBestCandidateLocked(cost, "", false)
+	return p.takeBestCandidateLockedWithExclusions(cost, "", false, nil)
 }
 
 func (p *SimplePool) takeBestTextAccountLocked(model string, cost int) (*Account, bool) {
-	return p.takeBestCandidateLocked(cost, model, true)
+	return p.takeBestCandidateLockedWithExclusions(cost, model, true, nil)
 }
 
 func (p *SimplePool) takeBestCandidateLocked(cost int, model string, textAware bool) (*Account, bool) {
+	return p.takeBestCandidateLockedWithExclusions(cost, model, textAware, nil)
+}
+
+func (p *SimplePool) takeBestCandidateLockedWithExclusions(cost int, model string, textAware bool, excludedJWTs map[string]struct{}) (*Account, bool) {
 	type candidate struct {
 		acc          *Account
 		fromReusable bool
@@ -390,6 +403,11 @@ func (p *SimplePool) takeBestCandidateLocked(cost int, model string, textAware b
 	consider := func(acc *Account, fromReusable bool) {
 		if acc == nil || acc.Quota < cost {
 			return
+		}
+		if len(excludedJWTs) > 0 {
+			if _, excluded := excludedJWTs[strings.TrimSpace(acc.JWT)]; excluded {
+				return
+			}
 		}
 		if textAware && p.isTextModelUnsupportedLocked(acc.JWT, model) {
 			return

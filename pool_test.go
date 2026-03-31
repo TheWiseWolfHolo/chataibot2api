@@ -97,6 +97,30 @@ func TestSimplePoolStartFillTaskCreatesAccountsAsynchronously(t *testing.T) {
 	t.Fatalf("expected fill task to complete before deadline, latest status=%+v", pool.Status())
 }
 
+func TestSimplePoolTryAcquireImageSkipsExcludedJWTs(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePool(10, 0, nil, nil)
+	pool.ready = []*Account{
+		{JWT: "jwt-excluded", Quota: 65},
+		{JWT: "jwt-fresh", Quota: 65},
+	}
+
+	acc := pool.TryAcquireImage(10, map[string]struct{}{
+		"jwt-excluded": {},
+	})
+
+	if acc == nil {
+		t.Fatalf("expected a fresh account, got nil")
+	}
+	if acc.JWT != "jwt-fresh" {
+		t.Fatalf("expected jwt-fresh, got %+v", acc)
+	}
+	if len(pool.ready) != 1 || pool.ready[0].JWT != "jwt-excluded" {
+		t.Fatalf("expected excluded account to remain ready, got %+v", pool.ready)
+	}
+}
+
 func TestSimplePoolStopFillTaskStopsFurtherRegistrations(t *testing.T) {
 	t.Helper()
 
