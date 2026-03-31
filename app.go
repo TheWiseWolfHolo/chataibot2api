@@ -609,7 +609,7 @@ func (a *App) StreamTextChat(ctx context.Context, req chatCompletionRequest, emi
 
 		messageReq.ChatID = chatID
 		streamedAnyChunk := false
-		streamedAnyEvent := false
+		streamedVisibleOutput := false
 		observedLatency := false
 		resp, err := a.backend.StreamTextMessage(ctx, messageReq, acc.JWT, func(event TextStreamEvent) error {
 			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") {
@@ -617,16 +617,14 @@ func (a *App) StreamTextChat(ctx context.Context, req chatCompletionRequest, emi
 					return mismatchErr
 				}
 			}
-			if strings.EqualFold(strings.TrimSpace(event.Type), "botType") ||
-				(strings.EqualFold(strings.TrimSpace(event.Type), "reasoningContent") && event.ReasoningContent != "") ||
+			if (strings.EqualFold(strings.TrimSpace(event.Type), "reasoningContent") && event.ReasoningContent != "") ||
 				(strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "") {
-				streamedAnyEvent = true
+				streamedVisibleOutput = true
 			}
 			if strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "" {
 				streamedAnyChunk = true
 			}
-			if !observedLatency && (strings.EqualFold(strings.TrimSpace(event.Type), "botType") ||
-				(strings.EqualFold(strings.TrimSpace(event.Type), "reasoningContent") && event.ReasoningContent != "") ||
+			if !observedLatency && ((strings.EqualFold(strings.TrimSpace(event.Type), "reasoningContent") && event.ReasoningContent != "") ||
 				(strings.EqualFold(strings.TrimSpace(event.Type), "chunk") && event.Delta != "")) {
 				observedLatency = true
 				a.observeTextAccount(acc.JWT, attemptStartedAt, nil)
@@ -641,7 +639,7 @@ func (a *App) StreamTextChat(ctx context.Context, req chatCompletionRequest, emi
 				a.observeTextAccount(acc.JWT, attemptStartedAt, err)
 			}
 			wrapped := wrapTextBackendError("text streaming failed", err)
-			if !streamedAnyEvent && isTextModelUnsupportedError(err) {
+			if !streamedVisibleOutput && isTextModelUnsupportedError(err) {
 				a.markTextModelUnsupported(acc.JWT, req.Model)
 				a.pool.Release(acc)
 				if attempt < textStreamRetryAttempts {
@@ -649,7 +647,7 @@ func (a *App) StreamTextChat(ctx context.Context, req chatCompletionRequest, emi
 				}
 				return TextCompletionResult{}, wrapped
 			}
-			if !streamedAnyEvent && shouldRetryTextBackendError(err) {
+			if !streamedVisibleOutput && shouldRetryTextBackendError(err) {
 				a.releaseTextAccount(acc, textRetryCooldown)
 				if attempt < textStreamRetryAttempts {
 					continue

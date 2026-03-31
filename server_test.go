@@ -1384,6 +1384,54 @@ func TestChatCompletionsFallsBackAfterStreamingEOFBeforeFirstChunk(t *testing.T)
 	}
 }
 
+func TestChatCompletionsFallsBackAfterRoleOnlyStreamingTimeout(t *testing.T) {
+	t.Helper()
+
+	pool, backend, handler := newTestHandler()
+	pool.acquireQueue = []*Account{
+		{JWT: "jwt-role-only-timeout", Quota: 65},
+		{JWT: "jwt-role-only-fallback", Quota: 65},
+	}
+	backend.textStreamEvents = []TextStreamEvent{
+		{Type: "botType", ChatModel: "gpt-4o-search-preview"},
+	}
+	backend.textStreamTrailingErrors = []error{fakeTimeoutError{}}
+	backend.textResponse = TextCompletionResult{
+		ChatModel: "gpt-4o-search-preview",
+		Content:   "stream_ok",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-4o-search-preview",
+		"stream":true,
+		"messages":[{"role":"user","content":"Reply with exactly OK."}]
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.cooldowns) != 1 || pool.cooldowns[0].Account == nil || pool.cooldowns[0].Account.JWT != "jwt-role-only-timeout" {
+		t.Fatalf("expected role-only timeout account to be cooled down, got %+v", pool.cooldowns)
+	}
+	if len(pool.observedTextResults) != 2 {
+		t.Fatalf("expected two text observations, got %+v", pool.observedTextResults)
+	}
+	if pool.observedTextResults[0].JWT != "jwt-role-only-timeout" || !pool.observedTextResults[0].TimedOut {
+		t.Fatalf("expected first observation to record timeout for role-only stream, got %+v", pool.observedTextResults)
+	}
+	if pool.observedTextResults[1].JWT != "jwt-role-only-fallback" || pool.observedTextResults[1].Err != nil {
+		t.Fatalf("expected second observation to be successful fallback completion, got %+v", pool.observedTextResults)
+	}
+	if !strings.Contains(recorder.Body.String(), `"content":"stream_ok"`) || !strings.Contains(recorder.Body.String(), "[DONE]") {
+		t.Fatalf("expected successful synthetic fallback response, got %s", recorder.Body.String())
+	}
+}
+
 func TestChatCompletionsFinishesStreamWhenUpstreamFailsAfterContentStarted(t *testing.T) {
 	t.Helper()
 
