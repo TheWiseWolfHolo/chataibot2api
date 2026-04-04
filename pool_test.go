@@ -221,6 +221,38 @@ func TestSimplePoolTryAcquireImageRefreshesStaleDefaultQuotaBeforeSelecting(t *t
 	}
 }
 
+func TestSimplePoolTryAcquireImageRefreshesMultipleBatchesBeforeSelecting(t *testing.T) {
+	t.Helper()
+
+	quotaCalls := 0
+	eligibleJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-60*time.Hour))
+	pool := NewSimplePool(32, 0, nil, func(jwt string) (int, error) {
+		quotaCalls++
+		if jwt == eligibleJWT {
+			return 29, nil
+		}
+		return 0, nil
+	})
+	for i := 1; i <= 13; i++ {
+		jwt := testJWTWithIssuedAt(t, time.Now().UTC().Add(-time.Duration(72+i)*time.Hour))
+		if i == 13 {
+			jwt = eligibleJWT
+		}
+		pool.ready = append(pool.ready, &Account{
+			JWT:   jwt,
+			Quota: 65,
+		})
+	}
+
+	acc := pool.TryAcquireImage(20, nil)
+	if acc == nil || acc.JWT != eligibleJWT {
+		t.Fatalf("expected 13th stale candidate to be refreshed and selected, got %+v", acc)
+	}
+	if quotaCalls != 13 {
+		t.Fatalf("expected live quota refresh to continue across batches, got %d calls", quotaCalls)
+	}
+}
+
 func TestSimplePoolAdminQuotaRowsKeepCachedQuotaUntilProbe(t *testing.T) {
 	t.Helper()
 
@@ -301,6 +333,32 @@ func TestSimplePoolStartFillTaskCapsFailureDelayAndStoresConfirmedQuota(t *testi
 	}
 
 	t.Fatalf("expected fill task to finish within capped retry window, latest status=%+v registerCalls=%d", pool.Status(), registerCalls)
+}
+
+func TestSimplePoolStartFillTaskStopsOnHardRegistrationError(t *testing.T) {
+	t.Helper()
+
+	pool := NewSimplePoolWithOptions(10, 0, func() (string, error) {
+		return "", fmt.Errorf("提交注册失败：注册失败(HTTP 400)：{\"message\":\"Robot verification error. Reload the page or update the app\"}")
+	}, nil, PoolOptions{
+		FailureBackoff:    time.Minute,
+		MaxFailureBackoff: time.Minute,
+	})
+
+	pool.StartFillTask(5)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		status := pool.Status()
+		if len(status.Tasks) > 0 && status.Tasks[0].Status == "blocked" {
+			if status.Tasks[0].Failed != 1 {
+				t.Fatalf("expected blocked fill task to stop after first failure, got %+v", status.Tasks[0])
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected fill task to enter blocked state, latest status=%+v", pool.Status())
 }
 
 func TestSimplePoolStopFillTaskStopsFurtherRegistrations(t *testing.T) {

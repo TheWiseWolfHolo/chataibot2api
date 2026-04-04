@@ -105,7 +105,7 @@ func run(args []string, getenv func(string) string) error {
 	}
 
 	fmt.Println("[*] 使用 cloudflare 自建邮箱")
-	mailCFClient = mail.NewMailCFClient(cfg.MailAPIBaseURL, cfg.MailDomain, cfg.MailAdminToken)
+	mailCFClient = mail.NewMailCFClient(cfg.MailAPIBaseURL, cfg.MailDomains, cfg.MailAdminToken)
 	apiClient = api.NewAPIClient()
 
 	accountPool := StartPool(cfg)

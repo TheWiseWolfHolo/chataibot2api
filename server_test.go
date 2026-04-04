@@ -533,6 +533,31 @@ func TestLoadConfigReadsPoolStorePathFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsMailDomainsFromEnv(t *testing.T) {
+	t.Helper()
+
+	cfg, err := LoadConfig([]string{}, func(key string) string {
+		values := map[string]string{
+			"PORT":              "18080",
+			"MAIL_API_BASE_URL": "https://mail.example.com",
+			"MAIL_DOMAINS":      "one.example, two.example ,one.example",
+			"MAIL_ADMIN_TOKEN":  "mail-token",
+			"API_BEARER_TOKEN":  "api-token",
+			"ADMIN_TOKEN":       "admin-token",
+		}
+		return values[key]
+	})
+	if err != nil {
+		t.Fatalf("expected config to load, got %v", err)
+	}
+	if got, want := strings.Join(cfg.MailDomains, ","), "one.example,two.example"; got != want {
+		t.Fatalf("expected deduped mail domains, got %v", cfg.MailDomains)
+	}
+	if cfg.MailDomain != "one.example" {
+		t.Fatalf("expected primary mail domain to default to first mail domains entry, got %+v", cfg)
+	}
+}
+
 func TestLoadConfigReadsAdminMigrationFieldsFromEnv(t *testing.T) {
 	t.Helper()
 
@@ -1070,6 +1095,85 @@ func TestImagesGenerationsAccountUnavailableIncludesLastFillError(t *testing.T) 
 	}
 	if !strings.Contains(body, nextRetryAt.Format(time.RFC3339)) {
 		t.Fatalf("expected next retry timestamp in response, got %s", body)
+	}
+}
+
+func TestImagesGenerationsFailsFastOnHardRegistrationError(t *testing.T) {
+	t.Helper()
+
+	previousWait := autoFillAcquireWait
+	previousPoll := autoFillAcquirePollInterval
+	autoFillAcquireWait = 200 * time.Millisecond
+	autoFillAcquirePollInterval = time.Millisecond
+	defer func() {
+		autoFillAcquireWait = previousWait
+		autoFillAcquirePollInterval = previousPoll
+	}()
+
+	pool, _, handler := newTestHandler()
+	pool.tryAcquireEmptyNil = true
+	nextRetryAt := time.Unix(1_700_001_999, 0).UTC()
+	pool.status = PoolStatus{
+		LastRegistrationError: "提交注册失败：注册失败(HTTP 400)：{\"message\":\"Robot verification error. Reload the page or update the app\"}",
+		NextRetryAt:           &nextRetryAt,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"qwen-image(lora)",
+		"prompt":"draw a blue cat icon"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.fillCounts) != 1 || pool.fillCounts[0] != autoFillBatchSize {
+		t.Fatalf("expected single auto fill task for %d accounts, got %+v", autoFillBatchSize, pool.fillCounts)
+	}
+	if !strings.Contains(recorder.Body.String(), "Robot verification error") {
+		t.Fatalf("expected hard registration error to surface in response, got %s", recorder.Body.String())
+	}
+}
+
+func TestImagesGenerationsSkipsStartingNewFillTaskDuringHardErrorBackoff(t *testing.T) {
+	t.Helper()
+
+	previousWait := autoFillAcquireWait
+	previousPoll := autoFillAcquirePollInterval
+	autoFillAcquireWait = 20 * time.Millisecond
+	autoFillAcquirePollInterval = time.Millisecond
+	defer func() {
+		autoFillAcquireWait = previousWait
+		autoFillAcquirePollInterval = previousPoll
+	}()
+
+	pool, _, handler := newTestHandler()
+	pool.tryAcquireEmptyNil = true
+	nextRetryAt := time.Now().Add(10 * time.Minute).UTC()
+	pool.status = PoolStatus{
+		LastRegistrationError: "提交注册失败：注册失败(HTTP 400)：{\"message\":\"Robot verification error. Reload the page or update the app\"}",
+		NextRetryAt:           &nextRetryAt,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"qwen-image(lora)",
+		"prompt":"draw a blue cat icon"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.fillCounts) != 0 {
+		t.Fatalf("expected hard backoff to skip starting a new fill task, got %+v", pool.fillCounts)
 	}
 }
 

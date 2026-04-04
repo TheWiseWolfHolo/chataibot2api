@@ -385,6 +385,8 @@ function fillTaskStatusLabel(status) {
       return '补号中';
     case 'stopping':
       return '停止中';
+    case 'blocked':
+      return '受阻';
     case 'stopped':
       return '已停止';
     case 'completed':

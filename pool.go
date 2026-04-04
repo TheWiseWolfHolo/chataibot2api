@@ -152,6 +152,7 @@ const (
 	defaultFreshQuota          = 65
 	freshQuotaGracePeriod      = 24 * time.Hour
 	maxQuotaRefreshCandidates  = 12
+	maxQuotaRefreshRounds      = 4
 )
 
 var fillTaskFailureRetryCap = 5 * time.Second
@@ -379,33 +380,31 @@ func (p *SimplePool) TryAcquireText(model string, cost int) *Account {
 }
 
 func (p *SimplePool) tryAcquireWithQuotaRefresh(cost int, model string, textAware bool, excludedJWTs map[string]struct{}) *Account {
-	p.mu.Lock()
-	acc := p.takeLocked(func() (*Account, bool) {
-		return p.takeBestConfirmedCandidateLockedWithExclusions(cost, model, textAware, excludedJWTs)
-	})
-	refreshJWTs := []string(nil)
-	if acc == nil {
-		refreshJWTs = p.collectQuotaRefreshCandidatesLocked(cost, model, textAware, excludedJWTs)
-	}
-	p.mu.Unlock()
-
-	if acc != nil {
-		return acc
-	}
-	if len(refreshJWTs) == 0 {
+	for round := 0; round < maxQuotaRefreshRounds; round++ {
 		p.mu.Lock()
-		defer p.mu.Unlock()
-		return p.takeLocked(func() (*Account, bool) {
-			return p.takeBestCandidateLockedWithExclusions(cost, model, textAware, excludedJWTs)
+		acc := p.takeLocked(func() (*Account, bool) {
+			return p.takeBestConfirmedCandidateLockedWithExclusions(cost, model, textAware, excludedJWTs)
 		})
-	}
+		refreshJWTs := []string(nil)
+		if acc == nil {
+			refreshJWTs = p.collectQuotaRefreshCandidatesLocked(cost, model, textAware, excludedJWTs)
+		}
+		p.mu.Unlock()
 
-	p.refreshAccountQuotas(refreshJWTs)
+		if acc != nil {
+			return acc
+		}
+		if len(refreshJWTs) == 0 {
+			return nil
+		}
+
+		p.refreshAccountQuotas(refreshJWTs)
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.takeLocked(func() (*Account, bool) {
-		return p.takeBestCandidateLockedWithExclusions(cost, model, textAware, excludedJWTs)
+		return p.takeBestConfirmedCandidateLockedWithExclusions(cost, model, textAware, excludedJWTs)
 	})
 }
 
@@ -996,6 +995,26 @@ func shouldRetireAccount(quota int, err error) bool {
 	return false
 }
 
+func isHardRegistrationError(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	switch {
+	case normalized == "":
+		return false
+	case strings.Contains(normalized, "robot verification error"):
+		return true
+	case strings.Contains(normalized, "captcha verification error"):
+		return true
+	case strings.Contains(normalized, "recaptcha"):
+		return true
+	case strings.Contains(normalized, "verify you are human"):
+		return true
+	case strings.Contains(normalized, "robot check"):
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeCachedQuota(jwt string, quota int, now time.Time) int {
 	return quota
 }
@@ -1210,6 +1229,10 @@ func (p *SimplePool) StartFillTask(count int) FillTaskSnapshot {
 				p.finishFillTask(task, "stopped")
 				return
 			}
+			if !success && p.shouldAbortFillTaskAfterFailure() {
+				p.finishFillTask(task, "blocked")
+				return
+			}
 
 			if delay > 0 {
 				delay = capFillTaskFailureDelay(delay)
@@ -1310,6 +1333,16 @@ func capFillTaskFailureDelay(delay time.Duration) time.Duration {
 		return fillTaskFailureRetryCap
 	}
 	return delay
+}
+
+func (p *SimplePool) shouldAbortFillTaskAfterFailure() bool {
+	if p == nil {
+		return false
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return isHardRegistrationError(p.lastRegistrationError)
 }
 
 func (p *SimplePool) ImportAccounts(accounts []*Account) ImportPoolResult {
@@ -1651,6 +1684,10 @@ func (p *SimplePool) failureDelayForLocked(lastErr string) time.Duration {
 
 	errLower := strings.ToLower(lastErr)
 	switch {
+	case isHardRegistrationError(errLower):
+		if delay < 10*time.Minute {
+			delay = 10 * time.Minute
+		}
 	case strings.Contains(errLower, "blocked temporarily for this ip"):
 		if delay < 10*time.Minute {
 			delay = 10 * time.Minute

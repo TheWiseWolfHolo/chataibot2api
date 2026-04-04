@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,48 +27,80 @@ type MailListResponse struct {
 type MailCFClient struct {
 	httpClient *http.Client
 	baseUrl    string
-	domain     string
+	domains    []string
 	adminToken string
+	mu         sync.Mutex
+	nextDomain int
 }
 
-func NewMailCFClient(baseUrl, domain, adminToken string) *MailCFClient {
+func NewMailCFClient(baseUrl string, domains []string, adminToken string) *MailCFClient {
 	baseUrl = strings.TrimRight(baseUrl, "/")
 	return &MailCFClient{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		baseUrl:    baseUrl,
-		domain:     domain,
+		domains:    append([]string(nil), domains...),
 		adminToken: adminToken,
 	}
 }
 
 // NewMail 创建新邮箱
 func (c *MailCFClient) NewMail() (string, error) {
+	domains := c.nextDomainOrder()
+	if len(domains) == 0 {
+		return "", fmt.Errorf("未配置可用邮箱域名")
+	}
+
 	name := generateRandomName()
-	payload := map[string]any{
-		"enablePrefix": true,
-		"name":         name,
-		"domain":       c.domain,
+	type domainAttempt struct {
+		domain string
+		err    error
 	}
-	data, _ := json.Marshal(payload)
+	attempts := make([]domainAttempt, 0, len(domains))
 
-	req, _ := http.NewRequest(http.MethodPost, c.baseUrl+"/admin/new_address", bytes.NewBuffer(data))
-	req.Header.Set("x-admin-auth", c.adminToken)
-	req.Header.Set("Content-Type", "application/json")
+	for _, domain := range domains {
+		payload := map[string]any{
+			"enablePrefix": true,
+			"name":         name,
+			"domain":       domain,
+		}
+		data, _ := json.Marshal(payload)
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("发送请求失败：%w", err)
+		req, _ := http.NewRequest(http.MethodPost, c.baseUrl+"/admin/new_address", bytes.NewBuffer(data))
+		req.Header.Set("x-admin-auth", c.adminToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			attempts = append(attempts, domainAttempt{
+				domain: domain,
+				err:    fmt.Errorf("发送请求失败：%w", err),
+			})
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			attempts = append(attempts, domainAttempt{
+				domain: domain,
+				err:    fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body))),
+			})
+			continue
+		}
+
+		address := fmt.Sprintf("%s@%s", name, domain)
+		fmt.Printf("[+] 成功创建新邮箱地址：%s\n", address)
+		return address, nil
 	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	parts := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.err == nil {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s -> %v", attempt.domain, attempt.err))
 	}
-
-	address := fmt.Sprintf("%s@%s", name, c.domain)
-	fmt.Printf("[+] 成功创建新邮箱地址：%s\n", address)
-	return address, nil
+	return "", fmt.Errorf("所有邮箱域名创建失败：%s", strings.Join(parts, "; "))
 }
 
 // FetchAndExtractCode 拉取邮件并提取验证码
@@ -145,4 +178,22 @@ func generateRandomName() string {
 	letters2 := generateRandomString(letCount, lowercaseLetters)
 
 	return letters1 + numbers + letters2
+}
+
+func (c *MailCFClient) nextDomainOrder() []string {
+	if c == nil || len(c.domains) == 0 {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	start := c.nextDomain % len(c.domains)
+	c.nextDomain = (c.nextDomain + 1) % len(c.domains)
+
+	ordered := make([]string, 0, len(c.domains))
+	for i := 0; i < len(c.domains); i++ {
+		ordered = append(ordered, c.domains[(start+i)%len(c.domains)])
+	}
+	return ordered
 }

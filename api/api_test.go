@@ -148,6 +148,37 @@ func TestSendRegisterRequestSurfacesSignupPrimeFailures(t *testing.T) {
 	}
 }
 
+func TestSendRegisterRequestExplainsCaptchaRequirement(t *testing.T) {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/app/auth/sign-up":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/register":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"Robot verification error. Reload the page or update the app"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewAPIClient()
+	client.webBaseURL = server.URL
+	client.apiBaseURL = server.URL + "/api"
+
+	err := client.SendRegisterRequest("user@example.com")
+	if err == nil {
+		t.Fatalf("expected captcha-protected register request to fail")
+	}
+	if !strings.Contains(err.Error(), "reCAPTCHA v3") {
+		t.Fatalf("expected captcha requirement hint in error, got %v", err)
+	}
+}
+
 func TestGenerateSecurePasswordProducesConfiguredLength(t *testing.T) {
 	t.Helper()
 

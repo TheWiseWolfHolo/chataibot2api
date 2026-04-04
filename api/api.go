@@ -35,6 +35,7 @@ const (
 type RegisterRequest struct {
 	Email                 string `json:"email"`
 	Password              string `json:"password"`
+	CaptchaToken          string `json:"captchaToken,omitempty"`
 	IsAdvertisingAccepted bool   `json:"isAdvertisingAccepted"`
 	MainSiteUrl           string `json:"mainSiteUrl"`
 	UtmSource             string `json:"utmSource"`
@@ -220,7 +221,12 @@ func (c *APIClient) SendRegisterRequest(email string) error {
 		return nil
 	}
 
-	return fmt.Errorf("注册失败(HTTP %d)：%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	bodyText := strings.TrimSpace(string(body))
+	if isRegistrationCaptchaError(bodyText) {
+		return fmt.Errorf("注册失败(HTTP %d)：%s（上游 sign-up 已启用 reCAPTCHA v3，当前后端未拿到有效 captchaToken）", resp.StatusCode, bodyText)
+	}
+
+	return fmt.Errorf("注册失败(HTTP %d)：%s", resp.StatusCode, bodyText)
 }
 
 // VerifyAccount 验证账号
@@ -553,4 +559,20 @@ func generateSecurePassword(length int) string {
 	}
 
 	return string(b)
+}
+
+func isRegistrationCaptchaError(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	switch {
+	case normalized == "":
+		return false
+	case strings.Contains(normalized, "robot verification error"):
+		return true
+	case strings.Contains(normalized, "captcha verification error"):
+		return true
+	case strings.Contains(normalized, "recaptcha"):
+		return true
+	default:
+		return false
+	}
 }

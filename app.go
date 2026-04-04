@@ -1264,9 +1264,20 @@ func (a *App) acquireAccountAfterAutoFill(acquire func() *Account) *Account {
 		if acc := acquire(); acc != nil {
 			return acc
 		}
+		if shouldStopWaitingForAutoFill(a.pool.Status()) {
+			return nil
+		}
 	}
 
 	return nil
+}
+
+func shouldStopWaitingForAutoFill(status PoolStatus) bool {
+	lastErr := strings.TrimSpace(status.LastRegistrationError)
+	if !isHardRegistrationError(lastErr) {
+		return false
+	}
+	return true
 }
 
 func (a *App) accountUnavailableMessage(kind string) string {
@@ -1291,6 +1302,9 @@ func (a *App) ensureFillTaskRunning(count int) {
 		return
 	}
 	status := a.pool.Status()
+	if isHardRegistrationError(status.LastRegistrationError) && status.NextRetryAt != nil && status.NextRetryAt.After(time.Now()) {
+		return
+	}
 	for _, task := range status.Tasks {
 		current := strings.TrimSpace(task.Status)
 		if current == "running" || current == "stopping" {

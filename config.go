@@ -20,6 +20,7 @@ type Config struct {
 	Port                     int
 	MailAPIBaseURL           string
 	MailDomain               string
+	MailDomains              []string
 	MailAdminToken           string
 	APIBearerToken           string
 	AdminToken               string
@@ -47,6 +48,7 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	portFlag := fs.Int("port", 8080, "服务端口")
 	mailAPIFlag := fs.String("api", "", "自建邮箱 API 地址")
 	mailDomainFlag := fs.String("domain", "", "自建邮箱域名")
+	mailDomainsFlag := fs.String("domains", "", "自建邮箱域名列表，逗号分隔")
 	mailTokenFlag := fs.String("token", "", "自建邮箱管理员密码")
 	bearerTokenFlag := fs.String("bearer-token", "", "API 鉴权 Bearer Token")
 	adminTokenFlag := fs.String("admin-token", "", "管理 API 鉴权 Bearer Token")
@@ -74,6 +76,7 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 		Port:                     *portFlag,
 		MailAPIBaseURL:           strings.TrimSpace(*mailAPIFlag),
 		MailDomain:               strings.TrimSpace(*mailDomainFlag),
+		MailDomains:              splitAndCleanCSV(*mailDomainsFlag),
 		MailAdminToken:           strings.TrimSpace(*mailTokenFlag),
 		APIBearerToken:           strings.TrimSpace(*bearerTokenFlag),
 		AdminToken:               strings.TrimSpace(*adminTokenFlag),
@@ -153,6 +156,9 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	if value := strings.TrimSpace(getenv("MAIL_DOMAIN")); value != "" {
 		cfg.MailDomain = value
 	}
+	if value := strings.TrimSpace(getenv("MAIL_DOMAINS")); value != "" {
+		cfg.MailDomains = splitAndCleanCSV(value)
+	}
 	if value := strings.TrimSpace(getenv("MAIL_ADMIN_TOKEN")); value != "" {
 		cfg.MailAdminToken = value
 	}
@@ -184,12 +190,19 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 		cfg.LegacyPoolExportBaseURL = value
 	}
 
+	if len(cfg.MailDomains) == 0 && cfg.MailDomain != "" {
+		cfg.MailDomains = []string{cfg.MailDomain}
+	}
+	if cfg.MailDomain == "" && len(cfg.MailDomains) > 0 {
+		cfg.MailDomain = cfg.MailDomains[0]
+	}
+
 	missing := make([]string, 0, 5)
 	if cfg.MailAPIBaseURL == "" {
 		missing = append(missing, "MAIL_API_BASE_URL")
 	}
-	if cfg.MailDomain == "" {
-		missing = append(missing, "MAIL_DOMAIN")
+	if len(cfg.MailDomains) == 0 {
+		missing = append(missing, "MAIL_DOMAIN or MAIL_DOMAINS")
 	}
 	if cfg.MailAdminToken == "" {
 		missing = append(missing, "MAIL_ADMIN_TOKEN")
@@ -205,4 +218,26 @@ func LoadConfig(args []string, getenv func(string) string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func splitAndCleanCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	if len(parts) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(parts))
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	return values
 }
