@@ -209,6 +209,88 @@ func TestSimplePoolTakeBestAccountTreatsOlderCached65As15(t *testing.T) {
 	}
 }
 
+func TestSimplePoolAdminQuotaRowsNormalizeStaleCachedQuota(t *testing.T) {
+	t.Helper()
+
+	oldJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-48*time.Hour))
+	freshJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-2*time.Hour))
+	pool := NewSimplePool(10, 0, nil, nil)
+	pool.ready = []*Account{
+		{JWT: oldJWT, Quota: 65},
+	}
+	pool.reusable = []*Account{
+		{JWT: freshJWT, Quota: 65},
+	}
+
+	rows := pool.AdminQuotaRows()
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %+v", rows)
+	}
+
+	quotas := map[string]int{}
+	for _, row := range rows {
+		quotas[row.JWT] = row.Quota
+	}
+	if quotas[oldJWT] != 15 {
+		t.Fatalf("expected old JWT to display normalized quota 15, got %+v", rows)
+	}
+	if quotas[freshJWT] != 65 {
+		t.Fatalf("expected fresh JWT to keep quota 65, got %+v", rows)
+	}
+}
+
+func TestSimplePoolStartFillTaskCapsFailureDelayAndStoresConfirmedQuota(t *testing.T) {
+	t.Helper()
+
+	previousCap := fillTaskFailureRetryCap
+	fillTaskFailureRetryCap = 5 * time.Millisecond
+	defer func() {
+		fillTaskFailureRetryCap = previousCap
+	}()
+
+	registerCalls := 0
+	pool := NewSimplePoolWithOptions(10, 0, func() (string, error) {
+		registerCalls++
+		if registerCalls == 1 {
+			return "", fmt.Errorf("temporary register failure")
+		}
+		return testJWTWithIssuedAt(t, time.Now().UTC()), nil
+	}, func(_ string) (int, error) {
+		return 15, nil
+	}, PoolOptions{
+		FailureBackoff:    time.Minute,
+		MaxFailureBackoff: time.Minute,
+	})
+
+	task := pool.StartFillTask(2)
+	if task.ID == "" {
+		t.Fatalf("expected task id, got empty")
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		status := pool.Status()
+		if len(status.Tasks) > 0 && status.Tasks[0].Status == "completed" {
+			if registerCalls != 2 {
+				t.Fatalf("expected 2 register calls after capped retry, got %d", registerCalls)
+			}
+			if status.Tasks[0].Completed != 1 || status.Tasks[0].Failed != 1 {
+				t.Fatalf("expected 1 failed + 1 completed task snapshot, got %+v", status.Tasks[0])
+			}
+			if status.ReadyCount != 1 {
+				t.Fatalf("expected one confirmed account in pool, got %+v", status)
+			}
+			if len(pool.ready) != 1 || pool.ready[0].Quota != 15 {
+				t.Fatalf("expected stored confirmed quota 15, got %+v", pool.ready)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected fill task to finish within capped retry window, latest status=%+v registerCalls=%d", pool.Status(), registerCalls)
+}
+
 func TestSimplePoolStopFillTaskStopsFurtherRegistrations(t *testing.T) {
 	t.Helper()
 

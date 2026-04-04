@@ -154,6 +154,8 @@ const (
 	freshQuotaGracePeriod      = 24 * time.Hour
 )
 
+var fillTaskFailureRetryCap = 5 * time.Second
+
 type jwtQuotaClaims struct {
 	IssuedAt int64 `json:"iat"`
 }
@@ -289,6 +291,19 @@ func (p *SimplePool) createAndEnqueueAccount() (bool, time.Duration) {
 
 	jwt, err := p.registrar()
 	now := time.Now()
+	confirmedQuota := defaultFreshQuota
+
+	if err == nil && strings.TrimSpace(jwt) != "" && p.quota != nil {
+		refreshedQuota, quotaErr := p.quota(strings.TrimSpace(jwt))
+		if quotaErr != nil {
+			err = fmt.Errorf("注册成功但刷新新号额度失败：%w", quotaErr)
+		} else {
+			confirmedQuota = normalizeCachedQuota(jwt, refreshedQuota, now.UTC())
+			if confirmedQuota <= 0 {
+				err = fmt.Errorf("注册成功但新号额度不可用：%d", confirmedQuota)
+			}
+		}
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -312,7 +327,7 @@ func (p *SimplePool) createAndEnqueueAccount() (bool, time.Duration) {
 	p.failureStreak = 0
 	p.lastRegistrationError = ""
 	p.nextRetryAt = time.Time{}
-	p.ready = append(p.ready, &Account{JWT: jwt, Quota: 65})
+	p.ready = append(p.ready, &Account{JWT: jwt, Quota: confirmedQuota})
 	p.persistLocked()
 	p.reconcileAutoFillLocked()
 	p.cond.Broadcast()
@@ -944,6 +959,9 @@ func (p *SimplePool) StartFillTask(count int) FillTaskSnapshot {
 				return
 			}
 
+			if delay > 0 {
+				delay = capFillTaskFailureDelay(delay)
+			}
 			if delay > 0 && waitForDelayOrCancel(delay, task.cancelCh) {
 				p.finishFillTask(task, "stopped")
 				return
@@ -1027,6 +1045,19 @@ func waitForDelayOrCancel(delay time.Duration, cancel <-chan struct{}) bool {
 	case <-cancel:
 		return true
 	}
+}
+
+func capFillTaskFailureDelay(delay time.Duration) time.Duration {
+	if delay <= 0 {
+		return 0
+	}
+	if fillTaskFailureRetryCap <= 0 {
+		return delay
+	}
+	if delay > fillTaskFailureRetryCap {
+		return fillTaskFailureRetryCap
+	}
+	return delay
 }
 
 func (p *SimplePool) ImportAccounts(accounts []*Account) ImportPoolResult {
@@ -1168,16 +1199,18 @@ func (p *SimplePool) AdminQuotaRows() []AdminQuotaRow {
 	totalCandidates := len(visiblePooled) + len(p.borrowed)
 	rows := make([]AdminQuotaRow, 0, totalCandidates)
 	seen := make(map[string]struct{}, totalCandidates)
+	now := time.Now().UTC()
 	appendRow := func(jwt string, quota int, bucket string) {
 		jwt = strings.TrimSpace(jwt)
 		if jwt == "" {
 			return
 		}
+		quota = normalizeCachedQuota(jwt, quota, now)
 		if _, ok := seen[jwt]; ok {
 			return
 		}
 		seen[jwt] = struct{}{}
-		health, _ := p.textHealthSnapshotLocked(jwt, time.Now().UTC())
+		health, _ := p.textHealthSnapshotLocked(jwt, now)
 		rows = append(rows, AdminQuotaRow{
 			JWT:           jwt,
 			Quota:         quota,

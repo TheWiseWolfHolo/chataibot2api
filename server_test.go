@@ -1028,6 +1028,51 @@ func TestImagesGenerationsStartsFillTaskWhenNoEligibleAccountAvailable(t *testin
 	}
 }
 
+func TestImagesGenerationsAccountUnavailableIncludesLastFillError(t *testing.T) {
+	t.Helper()
+
+	previousWait := autoFillAcquireWait
+	previousPoll := autoFillAcquirePollInterval
+	autoFillAcquireWait = 20 * time.Millisecond
+	autoFillAcquirePollInterval = time.Millisecond
+	defer func() {
+		autoFillAcquireWait = previousWait
+		autoFillAcquirePollInterval = previousPoll
+	}()
+
+	pool, _, handler := newTestHandler()
+	pool.tryAcquireEmptyNil = true
+	nextRetryAt := time.Unix(1_700_001_234, 0).UTC()
+	pool.status = PoolStatus{
+		LastRegistrationError: "mail worker 500",
+		NextRetryAt:           &nextRetryAt,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"qwen-image(lora)",
+		"prompt":"draw a blue cat icon"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+	}
+	if len(pool.fillCounts) != 1 || pool.fillCounts[0] != autoFillBatchSize {
+		t.Fatalf("expected single auto fill task for %d accounts, got %+v", autoFillBatchSize, pool.fillCounts)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "last fill error: mail worker 500") {
+		t.Fatalf("expected last fill error in response, got %s", body)
+	}
+	if !strings.Contains(body, nextRetryAt.Format(time.RFC3339)) {
+		t.Fatalf("expected next retry timestamp in response, got %s", body)
+	}
+}
+
 func TestChatCompletionsStartsFillTaskWhenNoEligibleTextAccountAvailable(t *testing.T) {
 	t.Helper()
 

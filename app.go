@@ -487,7 +487,7 @@ func (a *App) executeImageOperationWithRetry(requiredCost int, ratio string, run
 				}
 				return "", newTypedStatusError(http.StatusGatewayTimeout, fmt.Sprintf("Generation failed: no fresh image account available after retry (%v)", lastErr), "upstream_timeout")
 			}
-			return "", newTypedStatusError(http.StatusServiceUnavailable, "no eligible image account available after auto-fill wait", "account_unavailable")
+			return "", newTypedStatusError(http.StatusServiceUnavailable, a.accountUnavailableMessage("image"), "account_unavailable")
 		}
 		if jwt := strings.TrimSpace(acc.JWT); jwt != "" {
 			triedJWTs[jwt] = struct{}{}
@@ -583,7 +583,7 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
 		acc := a.acquireTextAccount(req.Model, requiredCost)
 		if acc == nil {
-			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, "no eligible text account available after auto-fill wait", "account_unavailable")
+			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, a.accountUnavailableMessage("text"), "account_unavailable")
 		}
 		attemptStartedAt := time.Now()
 
@@ -657,7 +657,7 @@ func (a *App) StreamTextChat(ctx context.Context, req chatCompletionRequest, emi
 	for attempt := 1; attempt <= textStreamRetryAttempts; attempt++ {
 		acc := a.acquireTextAccount(req.Model, requiredCost)
 		if acc == nil {
-			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, "no eligible text account available after auto-fill wait", "account_unavailable")
+			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, a.accountUnavailableMessage("text"), "account_unavailable")
 		}
 		attemptStartedAt := time.Now()
 
@@ -1267,6 +1267,23 @@ func (a *App) acquireAccountAfterAutoFill(acquire func() *Account) *Account {
 	}
 
 	return nil
+}
+
+func (a *App) accountUnavailableMessage(kind string) string {
+	base := fmt.Sprintf("no eligible %s account available after auto-fill wait", strings.TrimSpace(kind))
+	if a == nil || a.pool == nil {
+		return base
+	}
+
+	status := a.pool.Status()
+	lastErr := strings.TrimSpace(status.LastRegistrationError)
+	if lastErr == "" {
+		return base
+	}
+	if status.NextRetryAt != nil && !status.NextRetryAt.IsZero() {
+		return fmt.Sprintf("%s; last fill error: %s; next retry at %s", base, lastErr, status.NextRetryAt.UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf("%s; last fill error: %s", base, lastErr)
 }
 
 func (a *App) ensureFillTaskRunning(count int) {
