@@ -146,24 +146,31 @@ func TestSimplePoolTryAcquireImageSkipsExcludedJWTs(t *testing.T) {
 	}
 }
 
-func TestNormalizeCachedQuotaDowngradesOlderDefaultQuota(t *testing.T) {
+func TestNormalizeCachedQuotaKeepsStoredQuotaAndFlagsOlderDefaultForRefresh(t *testing.T) {
 	t.Helper()
 
-	oldJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-48*time.Hour))
-	freshJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-2*time.Hour))
+	now := time.Now().UTC()
+	oldJWT := testJWTWithIssuedAt(t, now.Add(-48*time.Hour))
+	freshJWT := testJWTWithIssuedAt(t, now.Add(-2*time.Hour))
 
-	if got := normalizeCachedQuota(oldJWT, 65, time.Now().UTC()); got != 15 {
-		t.Fatalf("expected older cached 65 quota to downgrade to 15, got %d", got)
+	if got := normalizeCachedQuota(oldJWT, 65, now); got != 65 {
+		t.Fatalf("expected older cached 65 quota to remain stored until live refresh, got %d", got)
 	}
-	if got := normalizeCachedQuota(freshJWT, 65, time.Now().UTC()); got != 65 {
+	if !shouldRefreshCachedQuota(oldJWT, 65, now) {
+		t.Fatalf("expected older cached 65 quota to be flagged for live refresh")
+	}
+	if got := normalizeCachedQuota(freshJWT, 65, now); got != 65 {
 		t.Fatalf("expected fresh cached 65 quota to remain 65, got %d", got)
 	}
-	if got := normalizeCachedQuota(oldJWT, 29, time.Now().UTC()); got != 29 {
+	if shouldRefreshCachedQuota(freshJWT, 65, now) {
+		t.Fatalf("expected fresh cached 65 quota to skip live refresh")
+	}
+	if got := normalizeCachedQuota(oldJWT, 29, now); got != 29 {
 		t.Fatalf("expected non-default quota to remain unchanged, got %d", got)
 	}
 }
 
-func TestSimplePoolRestoreFromStoreDowngradesOlderCached65Quota(t *testing.T) {
+func TestSimplePoolRestoreFromStoreKeepsCachedQuotaUntilLiveRefresh(t *testing.T) {
 	t.Helper()
 
 	store := &memoryAccountStore{
@@ -178,38 +185,43 @@ func TestSimplePoolRestoreFromStoreDowngradesOlderCached65Quota(t *testing.T) {
 	if len(pool.ready) != 2 {
 		t.Fatalf("expected 2 restored accounts, got %d", len(pool.ready))
 	}
-	if pool.ready[0].Quota != 15 {
-		t.Fatalf("expected older restored account quota to downgrade to 15, got %d", pool.ready[0].Quota)
+	if pool.ready[0].Quota != 65 {
+		t.Fatalf("expected older restored account quota to remain cached 65 before live refresh, got %d", pool.ready[0].Quota)
 	}
 	if pool.ready[1].Quota != 65 {
 		t.Fatalf("expected fresh restored account quota to remain 65, got %d", pool.ready[1].Quota)
 	}
 }
 
-func TestSimplePoolTakeBestAccountTreatsOlderCached65As15(t *testing.T) {
+func TestSimplePoolTryAcquireImageRefreshesStaleDefaultQuotaBeforeSelecting(t *testing.T) {
 	t.Helper()
 
-	pool := NewSimplePool(10, 0, nil, nil)
 	oldJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-48*time.Hour))
-	freshJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-2*time.Hour))
+	quotaCalls := 0
+	pool := NewSimplePool(10, 0, nil, func(jwt string) (int, error) {
+		quotaCalls++
+		if jwt != oldJWT {
+			t.Fatalf("unexpected quota refresh jwt: %s", jwt)
+		}
+		return 29, nil
+	})
 	pool.ready = []*Account{
 		{JWT: oldJWT, Quota: 65},
-		{JWT: freshJWT, Quota: 65},
 	}
 
-	pool.mu.Lock()
-	acc, _ := pool.takeBestAccountLocked(30)
-	pool.mu.Unlock()
-
-	if acc == nil {
-		t.Fatalf("expected a candidate for cost 30")
+	acc := pool.TryAcquireImage(30, nil)
+	if acc != nil {
+		t.Fatalf("expected stale cached 65 account to refresh to insufficient 29 quota, got %+v", acc)
 	}
-	if acc.JWT != freshJWT {
-		t.Fatalf("expected fresh account to be selected for cost 30, got %+v", acc)
+	if quotaCalls != 1 {
+		t.Fatalf("expected one live quota refresh before selection, got %d", quotaCalls)
+	}
+	if len(pool.ready) != 1 || pool.ready[0].Quota != 29 {
+		t.Fatalf("expected refreshed quota 29 to be stored back in pool, got %+v", pool.ready)
 	}
 }
 
-func TestSimplePoolAdminQuotaRowsNormalizeStaleCachedQuota(t *testing.T) {
+func TestSimplePoolAdminQuotaRowsKeepCachedQuotaUntilProbe(t *testing.T) {
 	t.Helper()
 
 	oldJWT := testJWTWithIssuedAt(t, time.Now().UTC().Add(-48*time.Hour))
@@ -231,8 +243,8 @@ func TestSimplePoolAdminQuotaRowsNormalizeStaleCachedQuota(t *testing.T) {
 	for _, row := range rows {
 		quotas[row.JWT] = row.Quota
 	}
-	if quotas[oldJWT] != 15 {
-		t.Fatalf("expected old JWT to display normalized quota 15, got %+v", rows)
+	if quotas[oldJWT] != 65 {
+		t.Fatalf("expected old JWT to keep cached quota before explicit probe, got %+v", rows)
 	}
 	if quotas[freshJWT] != 65 {
 		t.Fatalf("expected fresh JWT to keep quota 65, got %+v", rows)

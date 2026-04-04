@@ -150,8 +150,8 @@ const (
 	textSlowThreshold          = 8 * time.Second
 	textTimeoutIsolationWindow = 5 * time.Minute
 	defaultFreshQuota          = 65
-	staleDefaultQuota          = 15
 	freshQuotaGracePeriod      = 24 * time.Hour
+	maxQuotaRefreshCandidates  = 12
 )
 
 var fillTaskFailureRetryCap = 5 * time.Second
@@ -371,20 +371,41 @@ func (p *SimplePool) AcquireText(model string, cost int) *Account {
 }
 
 func (p *SimplePool) TryAcquireImage(cost int, excludedJWTs map[string]struct{}) *Account {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.takeLocked(func() (*Account, bool) {
-		return p.takeBestCandidateLockedWithExclusions(cost, "", false, excludedJWTs)
-	})
+	return p.tryAcquireWithQuotaRefresh(cost, "", false, excludedJWTs)
 }
 
 func (p *SimplePool) TryAcquireText(model string, cost int) *Account {
+	return p.tryAcquireWithQuotaRefresh(cost, model, true, nil)
+}
+
+func (p *SimplePool) tryAcquireWithQuotaRefresh(cost int, model string, textAware bool, excludedJWTs map[string]struct{}) *Account {
+	p.mu.Lock()
+	acc := p.takeLocked(func() (*Account, bool) {
+		return p.takeBestConfirmedCandidateLockedWithExclusions(cost, model, textAware, excludedJWTs)
+	})
+	refreshJWTs := []string(nil)
+	if acc == nil {
+		refreshJWTs = p.collectQuotaRefreshCandidatesLocked(cost, model, textAware, excludedJWTs)
+	}
+	p.mu.Unlock()
+
+	if acc != nil {
+		return acc
+	}
+	if len(refreshJWTs) == 0 {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.takeLocked(func() (*Account, bool) {
+			return p.takeBestCandidateLockedWithExclusions(cost, model, textAware, excludedJWTs)
+		})
+	}
+
+	p.refreshAccountQuotas(refreshJWTs)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
 	return p.takeLocked(func() (*Account, bool) {
-		return p.takeBestCandidateLockedWithExclusions(cost, model, true, nil)
+		return p.takeBestCandidateLockedWithExclusions(cost, model, textAware, excludedJWTs)
 	})
 }
 
@@ -424,7 +445,15 @@ func (p *SimplePool) takeBestCandidateLocked(cost int, model string, textAware b
 	return p.takeBestCandidateLockedWithExclusions(cost, model, textAware, nil)
 }
 
+func (p *SimplePool) takeBestConfirmedCandidateLockedWithExclusions(cost int, model string, textAware bool, excludedJWTs map[string]struct{}) (*Account, bool) {
+	return p.takeBestCandidateLockedWithOptions(cost, model, textAware, excludedJWTs, true)
+}
+
 func (p *SimplePool) takeBestCandidateLockedWithExclusions(cost int, model string, textAware bool, excludedJWTs map[string]struct{}) (*Account, bool) {
+	return p.takeBestCandidateLockedWithOptions(cost, model, textAware, excludedJWTs, false)
+}
+
+func (p *SimplePool) takeBestCandidateLockedWithOptions(cost int, model string, textAware bool, excludedJWTs map[string]struct{}, skipRefreshPending bool) (*Account, bool) {
 	type candidate struct {
 		acc          *Account
 		fromReusable bool
@@ -437,27 +466,31 @@ func (p *SimplePool) takeBestCandidateLockedWithExclusions(cost int, model strin
 		if acc == nil {
 			return
 		}
-		acc.Quota = normalizeCachedQuota(acc.JWT, acc.Quota, now)
-		if acc.Quota < cost {
+		jwt := strings.TrimSpace(acc.JWT)
+		quota := normalizeCachedQuota(jwt, acc.Quota, now)
+		if skipRefreshPending && shouldRefreshCachedQuota(jwt, quota, now) {
+			return
+		}
+		if quota < cost {
 			return
 		}
 		if len(excludedJWTs) > 0 {
-			if _, excluded := excludedJWTs[strings.TrimSpace(acc.JWT)]; excluded {
+			if _, excluded := excludedJWTs[jwt]; excluded {
 				return
 			}
 		}
-		if textAware && p.isTextModelUnsupportedLocked(acc.JWT, model) {
+		if textAware && p.isTextModelUnsupportedLocked(jwt, model) {
 			return
 		}
-		perfPriority, disabled := p.accountPerfPriorityLocked(acc.JWT, now)
+		perfPriority, disabled := p.accountPerfPriorityLocked(jwt, now)
 		if disabled {
 			return
 		}
-		basePriority := quotaLanePriority(cost, acc.Quota)
+		basePriority := quotaLanePriority(cost, quota)
 		if textAware {
-			basePriority = textQuotaLanePriority(cost, acc.Quota)
+			basePriority = textQuotaLanePriority(cost, quota)
 		}
-		score := basePriority*100000 + perfPriority*1000 + acc.Quota
+		score := basePriority*100000 + perfPriority*1000 + quota
 		if best == nil || score < best.score || (score == best.score && fromReusable && !best.fromReusable) {
 			best = &candidate{
 				acc:          acc,
@@ -477,6 +510,224 @@ func (p *SimplePool) takeBestCandidateLockedWithExclusions(cost int, model strin
 		return nil, false
 	}
 	return best.acc, best.fromReusable
+}
+
+func (p *SimplePool) collectQuotaRefreshCandidatesLocked(cost int, model string, textAware bool, excludedJWTs map[string]struct{}) []string {
+	if p == nil || p.quota == nil {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	candidates := make([]string, 0, maxQuotaRefreshCandidates)
+	seen := make(map[string]struct{}, maxQuotaRefreshCandidates)
+	consider := func(acc *Account) {
+		if acc == nil || len(candidates) >= maxQuotaRefreshCandidates {
+			return
+		}
+		jwt := strings.TrimSpace(acc.JWT)
+		if jwt == "" {
+			return
+		}
+		if len(excludedJWTs) > 0 {
+			if _, excluded := excludedJWTs[jwt]; excluded {
+				return
+			}
+		}
+		if textAware && p.isTextModelUnsupportedLocked(jwt, model) {
+			return
+		}
+		if _, disabled := p.accountPerfPriorityLocked(jwt, now); disabled {
+			return
+		}
+		quota := normalizeCachedQuota(jwt, acc.Quota, now)
+		if quota < cost || !shouldRefreshCachedQuota(jwt, quota, now) {
+			return
+		}
+		if _, ok := seen[jwt]; ok {
+			return
+		}
+		seen[jwt] = struct{}{}
+		candidates = append(candidates, jwt)
+	}
+
+	for _, acc := range p.reusable {
+		consider(acc)
+	}
+	for _, acc := range p.ready {
+		consider(acc)
+	}
+	return candidates
+}
+
+func (p *SimplePool) refreshAccountQuotas(jwts []string) {
+	if p == nil || p.quota == nil || len(jwts) == 0 {
+		return
+	}
+
+	type quotaRefreshResult struct {
+		jwt   string
+		quota int
+		err   error
+	}
+
+	results := make([]quotaRefreshResult, 0, len(jwts))
+	seen := make(map[string]struct{}, len(jwts))
+	for _, rawJWT := range jwts {
+		jwt := strings.TrimSpace(rawJWT)
+		if jwt == "" {
+			continue
+		}
+		if _, ok := seen[jwt]; ok {
+			continue
+		}
+		seen[jwt] = struct{}{}
+		quota, err := p.quota(jwt)
+		results = append(results, quotaRefreshResult{
+			jwt:   jwt,
+			quota: quota,
+			err:   err,
+		})
+	}
+	if len(results) == 0 {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	changed := false
+	removedAny := false
+	for _, result := range results {
+		updated, removed := p.applyQuotaRefreshLocked(result.jwt, result.quota, result.err)
+		changed = changed || updated
+		removedAny = removedAny || removed
+	}
+	if !changed {
+		return
+	}
+
+	p.persistLocked()
+	p.reconcileAutoFillLocked()
+	if removedAny || p.autoFillActive {
+		p.cond.Broadcast()
+	}
+}
+
+func (p *SimplePool) applyQuotaRefreshLocked(jwt string, quota int, err error) (bool, bool) {
+	jwt = strings.TrimSpace(jwt)
+	if jwt == "" {
+		return false, false
+	}
+
+	switch {
+	case err == nil:
+		updated := p.updateQuotaByJWTLocked(jwt, quota)
+		if !shouldRetireAccount(quota, nil) {
+			return updated, false
+		}
+		removed := p.removeAvailableJWTLocked(jwt)
+		delete(p.textHealth, jwt)
+		delete(p.textModelUnsupported, jwt)
+		return updated || removed, removed
+	case shouldRetireAccount(0, err):
+		updated := p.updateQuotaByJWTLocked(jwt, 0)
+		removed := p.removeAvailableJWTLocked(jwt)
+		delete(p.textHealth, jwt)
+		delete(p.textModelUnsupported, jwt)
+		return updated || removed, removed
+	default:
+		return false, false
+	}
+}
+
+func (p *SimplePool) updateQuotaByJWTLocked(jwt string, quota int) bool {
+	if p == nil {
+		return false
+	}
+
+	updated := false
+	updateAccount := func(acc *Account) {
+		if acc == nil {
+			return
+		}
+		if strings.TrimSpace(acc.JWT) != jwt {
+			return
+		}
+		if acc.Quota == quota {
+			return
+		}
+		acc.Quota = quota
+		updated = true
+	}
+
+	for _, acc := range p.ready {
+		updateAccount(acc)
+	}
+	for _, acc := range p.reusable {
+		updateAccount(acc)
+	}
+	for i := range p.pruneShadow {
+		updateAccount(p.pruneShadow[i].account)
+	}
+	for acc, originalJWT := range p.borrowed {
+		if acc == nil {
+			continue
+		}
+		if strings.TrimSpace(originalJWT) != jwt {
+			continue
+		}
+		if acc.Quota == quota {
+			continue
+		}
+		acc.Quota = quota
+		updated = true
+	}
+
+	return updated
+}
+
+func (p *SimplePool) removeAvailableJWTLocked(jwt string) bool {
+	if p == nil {
+		return false
+	}
+
+	removed := false
+	filterAccounts := func(accounts []*Account) []*Account {
+		if len(accounts) == 0 {
+			return accounts
+		}
+		filtered := accounts[:0]
+		for _, acc := range accounts {
+			if acc == nil {
+				continue
+			}
+			if strings.TrimSpace(acc.JWT) == jwt {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, acc)
+		}
+		return filtered
+	}
+
+	p.ready = filterAccounts(p.ready)
+	p.reusable = filterAccounts(p.reusable)
+	if len(p.pruneShadow) > 0 {
+		filtered := p.pruneShadow[:0]
+		for _, item := range p.pruneShadow {
+			if item.account == nil {
+				continue
+			}
+			if strings.TrimSpace(item.account.JWT) == jwt {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		p.pruneShadow = filtered
+	}
+
+	return removed
 }
 
 func textQuotaLanePriority(cost int, quota int) int {
@@ -746,25 +997,26 @@ func shouldRetireAccount(quota int, err error) bool {
 }
 
 func normalizeCachedQuota(jwt string, quota int, now time.Time) int {
+	return quota
+}
+
+func shouldRefreshCachedQuota(jwt string, quota int, now time.Time) bool {
 	if quota != defaultFreshQuota {
-		return quota
+		return false
 	}
 
 	issuedAt, ok := jwtIssuedAt(jwt)
 	if !ok {
-		return quota
+		return false
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	now = now.UTC()
 	if issuedAt.After(now) {
-		return quota
+		return false
 	}
-	if now.Sub(issuedAt) < freshQuotaGracePeriod {
-		return quota
-	}
-	return staleDefaultQuota
+	return now.Sub(issuedAt) >= freshQuotaGracePeriod
 }
 
 func jwtIssuedAt(jwt string) (time.Time, bool) {
