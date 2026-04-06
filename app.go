@@ -188,6 +188,10 @@ func minimumTier(tiers []string) string {
 	return strings.TrimSpace(tiers[0])
 }
 
+func isFreeTierModel(tiers []string) bool {
+	return strings.EqualFold(minimumTier(tiers), "free")
+}
+
 func textAccessTiers(modelID string) []string {
 	switch strings.TrimSpace(modelID) {
 	case "gpt-4.1-nano", "gpt-5.4-nano", "gpt-5.4-mini", "claude-3-haiku", "gemini-flash",
@@ -226,8 +230,10 @@ func imageEditAccess(modelID string) string {
 	switch strings.TrimSpace(modelID) {
 	case "GPT_IMAGE_HIGH", "GPT_IMAGE_1_5_HIGH", "GOOGLE-nano-banana-pro":
 		return "subscription-gated"
-	case "GPT_IMAGE", "GPT_IMAGE_1_5":
+	case "GPT_IMAGE":
 		return "cost-higher-than-generate"
+	case "GPT_IMAGE_1_5":
+		return "subscription-gated"
 	default:
 		return ""
 	}
@@ -235,8 +241,10 @@ func imageEditAccess(modelID string) string {
 
 func imageAccessTiers(modelID string) []string {
 	switch strings.TrimSpace(modelID) {
-	case "FLUX-schnell", "IDEOGRAM_TURBO", "IDEOGRAM", "FLUX-pro", "QWEN-lora", "GROK", "GPT_IMAGE", "GPT_IMAGE_1_5", "FLUX-ultra", "GOOGLE-nano-banana", "GOOGLE-nano-banana-2", "BYTEDANCE-seedream-4", "BYTEDANCE-seedream-5-lite":
+	case "FLUX-schnell", "IDEOGRAM_TURBO", "IDEOGRAM", "FLUX-pro", "QWEN-lora", "GROK", "GPT_IMAGE", "FLUX-ultra", "GOOGLE-nano-banana", "GOOGLE-nano-banana-2", "BYTEDANCE-seedream-4", "BYTEDANCE-seedream-5-lite":
 		return []string{"free", "standard", "premium", "batya", "business"}
+	case "GPT_IMAGE_1_5":
+		return []string{"standard", "premium", "batya", "business"}
 	case "RECRAFT-v3", "MIDJOURNEY-6.1", "MIDJOURNEY-7", "FLUX-kontext-max":
 		return []string{"standard", "premium", "batya", "business"}
 	case "GPT_IMAGE_HIGH", "GPT_IMAGE_1_5_HIGH", "GOOGLE-nano-banana-pro":
@@ -286,7 +294,7 @@ func imageRuntimeNote(modelID string) string {
 	case "GPT_IMAGE":
 		return "free 可用；改图更贵"
 	case "GPT_IMAGE_1_5":
-		return "默认生图；改图更贵"
+		return "Standard 及以上；改图也受订阅层级限制"
 	case "GPT_IMAGE_HIGH", "GPT_IMAGE_1_5_HIGH", "GOOGLE-nano-banana-pro":
 		return "高细节生图；改图需高级权限"
 	case "FLUX-schnell", "IDEOGRAM_TURBO", "IDEOGRAM", "FLUX-pro", "GROK", "FLUX-ultra", "BYTEDANCE-seedream-4", "BYTEDANCE-seedream-5-lite", "RECRAFT-v3", "MIDJOURNEY-6.1", "MIDJOURNEY-7":
@@ -309,7 +317,7 @@ func imageRouteAdvice(modelID string) string {
 	case "FLUX-pro", "FLUX-ultra":
 		return "适合 Flux 系列高质量生图"
 	case "GPT_IMAGE_1_5":
-		return "适合默认生图；若只是改图，优先考虑 gemini-2.5-flash-image"
+		return "需 Standard 及以上；free 默认不应优先走这条线"
 	case "GPT_IMAGE":
 		return "适合 OpenAI 生图；若只是改图，成本高于 gemini-2.5-flash-image"
 	case "GPT_IMAGE_HIGH", "GPT_IMAGE_1_5_HIGH":
@@ -404,10 +412,16 @@ func (a *App) Models() []string {
 		if cfg.Hidden {
 			continue
 		}
+		if !isFreeTierModel(imageAccessTiers(modelID)) {
+			continue
+		}
 		models = append(models, publicModelID(modelID))
 	}
 	for modelID, cfg := range textModelRouter {
 		if cfg.Hidden {
+			continue
+		}
+		if !isFreeTierModel(textAccessTiers(modelID)) {
 			continue
 		}
 		models = append(models, publicModelID(modelID))
@@ -487,7 +501,7 @@ func (a *App) executeImageOperationWithRetry(requiredCost int, ratio string, run
 				}
 				return "", newTypedStatusError(http.StatusGatewayTimeout, fmt.Sprintf("Generation failed: no fresh image account available after retry (%v)", lastErr), "upstream_timeout")
 			}
-			return "", newTypedStatusError(http.StatusServiceUnavailable, a.accountUnavailableMessage("image"), "account_unavailable")
+			return "", newTypedStatusError(http.StatusServiceUnavailable, a.accountUnavailableMessage("image", requiredCost), "account_unavailable")
 		}
 		if jwt := strings.TrimSpace(acc.JWT); jwt != "" {
 			triedJWTs[jwt] = struct{}{}
@@ -539,11 +553,11 @@ func (a *App) executeImageOperationWithRetry(requiredCost int, ratio string, run
 func defaultImageModelForRequest(isEditMode bool, isMergeMode bool) string {
 	switch {
 	case isMergeMode:
-		return "GPT_IMAGE_1_5"
+		return "QWEN-lora"
 	case isEditMode:
 		return "GOOGLE-nano-banana"
 	default:
-		return "GPT_IMAGE_1_5"
+		return "QWEN-lora"
 	}
 }
 
@@ -583,7 +597,7 @@ func (a *App) CompleteTextChat(req chatCompletionRequest) (TextCompletionResult,
 	for attempt := 1; attempt <= textRetryAttempts; attempt++ {
 		acc := a.acquireTextAccount(req.Model, requiredCost)
 		if acc == nil {
-			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, a.accountUnavailableMessage("text"), "account_unavailable")
+			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, a.accountUnavailableMessage("text", requiredCost), "account_unavailable")
 		}
 		attemptStartedAt := time.Now()
 
@@ -657,7 +671,7 @@ func (a *App) StreamTextChat(ctx context.Context, req chatCompletionRequest, emi
 	for attempt := 1; attempt <= textStreamRetryAttempts; attempt++ {
 		acc := a.acquireTextAccount(req.Model, requiredCost)
 		if acc == nil {
-			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, a.accountUnavailableMessage("text"), "account_unavailable")
+			return TextCompletionResult{}, newTypedStatusError(http.StatusServiceUnavailable, a.accountUnavailableMessage("text", requiredCost), "account_unavailable")
 		}
 		attemptStartedAt := time.Now()
 
@@ -1280,14 +1294,18 @@ func shouldStopWaitingForAutoFill(status PoolStatus) bool {
 	return true
 }
 
-func (a *App) accountUnavailableMessage(kind string) string {
+func (a *App) accountUnavailableMessage(kind string, requiredCost int) string {
 	base := fmt.Sprintf("no eligible %s account available after auto-fill wait", strings.TrimSpace(kind))
 	if a == nil || a.pool == nil {
 		return base
 	}
 
 	status := a.pool.Status()
+	diagnostic := strings.TrimSpace(a.accountUnavailableDiagnostic(requiredCost))
 	lastErr := strings.TrimSpace(status.LastRegistrationError)
+	if diagnostic != "" {
+		base = fmt.Sprintf("%s; %s", base, diagnostic)
+	}
 	if lastErr == "" {
 		return base
 	}
@@ -1295,6 +1313,58 @@ func (a *App) accountUnavailableMessage(kind string) string {
 		return fmt.Sprintf("%s; last fill error: %s; next retry at %s", base, lastErr, status.NextRetryAt.UTC().Format(time.RFC3339))
 	}
 	return fmt.Sprintf("%s; last fill error: %s", base, lastErr)
+}
+
+func (a *App) accountUnavailableDiagnostic(requiredCost int) string {
+	if a == nil || a.pool == nil {
+		return ""
+	}
+	rows := a.pool.AdminQuotaRows()
+	if len(rows) == 0 {
+		return "pool has 0 visible account(s)"
+	}
+	if requiredCost <= 0 {
+		return fmt.Sprintf("pool has %d visible account(s)", len(rows))
+	}
+
+	now := time.Now().UTC()
+	maxQuota := 0
+	eligible := 0
+	borrowedEligible := 0
+	coolingEligible := 0
+	readyEligible := 0
+
+	for _, row := range rows {
+		if row.Quota > maxQuota {
+			maxQuota = row.Quota
+		}
+		if row.Quota < requiredCost {
+			continue
+		}
+		eligible++
+		if strings.EqualFold(strings.TrimSpace(row.PoolBucket), "borrowed") {
+			borrowedEligible++
+			continue
+		}
+		if row.DisabledUntil != nil && row.DisabledUntil.After(now) {
+			coolingEligible++
+			continue
+		}
+		readyEligible++
+	}
+
+	switch {
+	case eligible == 0:
+		return fmt.Sprintf("pool has %d visible account(s), max cached quota %d, requested cost %d", len(rows), maxQuota, requiredCost)
+	case readyEligible == 0 && borrowedEligible == eligible:
+		return fmt.Sprintf("pool has %d account(s) with quota >= %d, but all are currently borrowed", eligible, requiredCost)
+	case readyEligible == 0 && coolingEligible == eligible:
+		return fmt.Sprintf("pool has %d account(s) with quota >= %d, but all are cooling down", eligible, requiredCost)
+	case readyEligible == 0:
+		return fmt.Sprintf("pool has %d account(s) with quota >= %d, but none are currently ready (borrowed=%d cooling=%d)", eligible, requiredCost, borrowedEligible, coolingEligible)
+	default:
+		return fmt.Sprintf("pool has %d visible account(s), %d with quota >= %d, but allocator returned none", len(rows), readyEligible, requiredCost)
+	}
 }
 
 func (a *App) ensureFillTaskRunning(count int) {

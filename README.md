@@ -29,7 +29,7 @@ OpenAI-compatible image and text proxy with an account-pool admin console, Docke
 - Current image-route pricing / access hints synced from upstream catalog:
   - `flux-schnell`: 生图 `2`
   - `ideogram-3-turbo`: 生图 `4`
-  - `gpt-image-1.5`: 生图 `12`，改图 `17`，拼图 `2图22 / 3图27 / 4图32`
+  - `gpt-image-1.5`: 生图 `12`，改图 `17`，拼图 `2图22 / 3图27 / 4图32`，当前 fresh runtime 需要 `Standard` 及以上
   - `gpt-image-1`: 生图 `15`，改图 `20`，拼图 `2图25 / 3图30 / 4图35`
   - `gemini-2.5-flash-image`: 生图 `15`，改图 `15`，拼图 `2图20 / 3图25 / 4图30`，适合作为默认改图入口
   - `gemini-3.1-flash-image-preview`: 生图 `30`，改图 `30`，拼图 `2图40 / 3图50 / 4图60`，free 可见但成本高于 `gemini-2.5-flash-image`
@@ -40,9 +40,9 @@ OpenAI-compatible image and text proxy with an account-pool admin console, Docke
   - `seedream-4.0`: 仅生图，`12`
   - `seedream-5.0-lite`: 仅生图
 - Proxy default routing:
-  - model omitted + pure generation → `gpt-image-1.5`
+  - model omitted + pure generation → `qwen-image(lora)`
   - model omitted + single-image edit → `gemini-2.5-flash-image`
-  - model omitted + multi-image merge → `gpt-image-1.5`
+  - model omitted + multi-image merge → `qwen-image(lora)`
 - Text path now uses model-aware account selection and retries on timeout / EOF / transport resets instead of assuming every account supports every text model equally.
 - Admin catalog UI shows the minimum required tier instead of rendering every inherited tier badge.
 

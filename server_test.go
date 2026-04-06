@@ -677,8 +677,8 @@ func TestModelsEndpointListsSupportedModels(t *testing.T) {
 	if _, ok := modelIDs["seedream-5.0-lite"]; !ok {
 		t.Fatalf("expected seedream-5.0-lite in model list, got %+v", resp.Data)
 	}
-	if _, ok := modelIDs["gpt-image-1.5"]; !ok {
-		t.Fatalf("expected gpt-image-1.5 in model list, got %+v", resp.Data)
+	if _, ok := modelIDs["gpt-image-1.5"]; ok {
+		t.Fatalf("expected subscription-gated gpt-image-1.5 to be omitted from public model list, got %+v", resp.Data)
 	}
 	if _, ok := modelIDs["flux-schnell"]; !ok {
 		t.Fatalf("expected flux-schnell in model list, got %+v", resp.Data)
@@ -703,6 +703,20 @@ func TestModelsEndpointListsSupportedModels(t *testing.T) {
 	}
 	if _, ok := modelIDs["o3-pro"]; ok {
 		t.Fatalf("expected hidden model o3-pro to be omitted, got %+v", resp.Data)
+	}
+}
+
+func TestDefaultImageModelForRequestPrefersFreeTierRoutes(t *testing.T) {
+	t.Helper()
+
+	if got := defaultImageModelForRequest(false, false); got != "QWEN-lora" {
+		t.Fatalf("expected free-tier generation default QWEN-lora, got %q", got)
+	}
+	if got := defaultImageModelForRequest(false, true); got != "QWEN-lora" {
+		t.Fatalf("expected free-tier merge default QWEN-lora, got %q", got)
+	}
+	if got := defaultImageModelForRequest(true, false); got != "GOOGLE-nano-banana" {
+		t.Fatalf("expected edit default GOOGLE-nano-banana, got %q", got)
 	}
 }
 
@@ -1095,6 +1109,47 @@ func TestImagesGenerationsAccountUnavailableIncludesLastFillError(t *testing.T) 
 	}
 	if !strings.Contains(body, nextRetryAt.Format(time.RFC3339)) {
 		t.Fatalf("expected next retry timestamp in response, got %s", body)
+	}
+}
+
+func TestImagesGenerationsAccountUnavailableIncludesEligibilityDiagnostics(t *testing.T) {
+	t.Helper()
+
+	previousWait := autoFillAcquireWait
+	previousPoll := autoFillAcquirePollInterval
+	autoFillAcquireWait = 20 * time.Millisecond
+	autoFillAcquirePollInterval = time.Millisecond
+	defer func() {
+		autoFillAcquireWait = previousWait
+		autoFillAcquirePollInterval = previousPoll
+	}()
+
+	pool, _, handler := newTestHandler()
+	pool.tryAcquireEmptyNil = true
+	pool.adminRows = []AdminQuotaRow{
+		{JWT: "jwt-a", Quota: 15, PoolBucket: "ready"},
+		{JWT: "jwt-b", Quota: 15, PoolBucket: "reusable"},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"qwen-image(lora)",
+		"prompt":"draw a blue cat icon"
+	}`))
+	req.Header.Set("Authorization", "Bearer api-token")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "allocator returned none") {
+		t.Fatalf("expected allocator diagnostic in response, got %s", body)
+	}
+	if !strings.Contains(body, "2 visible account(s)") {
+		t.Fatalf("expected pool count diagnostic in response, got %s", body)
 	}
 }
 
@@ -2727,8 +2782,8 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"gpt-5.4-pro"`) {
 		t.Fatalf("expected paid text model in admin catalog, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"edit_access":"cost-higher-than-generate"`) {
-		t.Fatalf("expected higher-cost edit metadata for GPT_IMAGE_1_5, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"edit_access":"subscription-gated"`) {
+		t.Fatalf("expected subscription-gated edit metadata for GPT_IMAGE_1_5, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"minimum_tier":"premium"`) {
 		t.Fatalf("expected premium minimum tier metadata in admin catalog, got %s", rec.Body.String())
@@ -2745,7 +2800,7 @@ func TestAdminCatalogEndpointReturnsTextAndImageModels(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"runtime_note":"仅chat生图"`) {
 		t.Fatalf("expected runtime note for generate-only models, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"route_advice":"适合默认生图；若只是改图，优先考虑 gemini-2.5-flash-image"`) {
+	if !strings.Contains(rec.Body.String(), `"route_advice":"需 Standard 及以上；free 默认不应优先走这条线"`) {
 		t.Fatalf("expected route advice metadata, got %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"low_quota_threshold":10`) {
