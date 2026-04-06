@@ -1531,64 +1531,65 @@ func (p *SimplePool) Prune() PruneSummary {
 	p.mu.Lock()
 	pooled := make([]pooledAccount, 0, len(p.ready)+len(p.reusable))
 	for _, acc := range p.ready {
-		pooled = append(pooled, pooledAccount{account: acc})
+		if acc == nil {
+			continue
+		}
+		pooled = append(pooled, pooledAccount{account: &Account{
+			JWT:   strings.TrimSpace(acc.JWT),
+			Quota: acc.Quota,
+		}})
 	}
 	for _, acc := range p.reusable {
-		pooled = append(pooled, pooledAccount{account: acc, isReusable: true})
+		if acc == nil {
+			continue
+		}
+		pooled = append(pooled, pooledAccount{account: &Account{
+			JWT:   strings.TrimSpace(acc.JWT),
+			Quota: acc.Quota,
+		}, isReusable: true})
 	}
-	p.pruneShadow = clonePooledAccounts(pooled)
-	p.ready = nil
-	p.reusable = nil
 	p.mu.Unlock()
-
-	keptReady := make([]*Account, 0, len(pooled))
-	keptReusable := make([]*Account, 0, len(pooled))
 	summary := PruneSummary{}
+	changed := false
+	removedAny := false
 
 	for _, item := range pooled {
+		if item.account == nil {
+			continue
+		}
 		summary.Checked++
 		quota := item.account.Quota
-		retire := shouldRetireAccount(quota, nil)
+		refreshErr := error(nil)
 		if p.quota != nil {
 			refreshedQuota, err := p.quota(item.account.JWT)
 			if err != nil {
-				if shouldRetireAccount(0, err) {
-					item.account.Quota = 0
-					retire = true
-				} else {
+				refreshErr = err
+				if !shouldRetireAccount(0, err) {
 					fmt.Printf("[-] prune 刷新额度失败，跳过删除：jwt=%s err=%v\n", strings.TrimSpace(item.account.JWT), err)
 				}
 			} else {
 				quota = refreshedQuota
-				item.account.Quota = quota
-				retire = shouldRetireAccount(quota, nil)
 			}
 		}
-
-		if retire {
-			delete(p.textHealth, strings.TrimSpace(item.account.JWT))
-			delete(p.textModelUnsupported, strings.TrimSpace(item.account.JWT))
+		p.mu.Lock()
+		updated, removed := p.applyQuotaRefreshLocked(item.account.JWT, quota, refreshErr)
+		if removed {
 			summary.Removed++
-			continue
 		}
-
-		if item.isReusable {
-			keptReusable = append(keptReusable, item.account)
-		} else {
-			keptReady = append(keptReady, item.account)
-		}
+		changed = changed || updated
+		removedAny = removedAny || removed
+		p.mu.Unlock()
 	}
 
 	p.mu.Lock()
-	p.ready = append(p.ready, keptReady...)
-	p.reusable = append(p.reusable, keptReusable...)
-	p.pruneShadow = nil
 	p.pruneChecks += summary.Checked
 	p.pruneRemoved += summary.Removed
-	p.persistLocked()
+	if changed {
+		p.persistLocked()
+	}
 	p.reconcileAutoFillLocked()
 	summary.Remaining = len(p.ready) + len(p.reusable)
-	if len(keptReady) > 0 || len(keptReusable) > 0 || p.autoFillActive {
+	if changed && (removedAny || p.autoFillActive) {
 		p.cond.Broadcast()
 	}
 	p.mu.Unlock()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -569,6 +570,56 @@ func TestSimplePoolPruneKeepsReadVisibilityWhileQuotaRefreshInFlight(t *testing.
 		if summary.Remaining != 2 {
 			t.Fatalf("expected prune to keep both accounts, got %+v", summary)
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected prune to finish after releasing quota refresh")
+	}
+}
+
+func TestSimplePoolPruneDoesNotBlockAcquireWhileQuotaRefreshInFlight(t *testing.T) {
+	t.Helper()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	signalOnce := make(chan struct{}, 1)
+
+	pool := NewSimplePool(10, 0, func() (string, error) {
+		return "", fmt.Errorf("no account")
+	}, func(jwt string) (int, error) {
+		select {
+		case signalOnce <- struct{}{}:
+			close(entered)
+		default:
+		}
+		<-release
+		return 15, nil
+	})
+	pool.ready = []*Account{
+		{JWT: "keep-healthy", Quota: 15},
+	}
+
+	done := make(chan PruneSummary, 1)
+	go func() {
+		done <- pool.Prune()
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected prune quota refresh to start")
+	}
+
+	acc := pool.TryAcquireImage(2, nil)
+	if acc == nil {
+		t.Fatalf("expected acquire to succeed while prune is in flight")
+	}
+	if strings.TrimSpace(acc.JWT) != "keep-healthy" {
+		t.Fatalf("expected keep-healthy during prune, got %+v", acc)
+	}
+
+	close(release)
+
+	select {
+	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("expected prune to finish after releasing quota refresh")
 	}
